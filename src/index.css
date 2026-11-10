@@ -1,0 +1,80 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-display: 'Anton', 'Barlow Condensed', Impact, sans-serif;
+    --font-condensed: 'Barlow Condensed', sans-serif;
+    --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: #020617;
+    color: #f8fafc;
+    overflow-x: hidden;
+  }
+}
+
+.font-broadcast-num {
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.font-broadcast-title {
+  font-family: var(--font-display);
+  letter-spacing: 0.03em;
+}
+
+.font-condensed-bold {
+  font-family: var(--font-condensed);
+  font-weight: 800;
+}
+
+@keyframes danmakuFly {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(calc(-100vw - 120%), 0, 0);
+  }
+}
+
+.animate-danmaku {
+  left: 100%;
+  animation: danmakuFly 14s linear infinite;
+}
+
+@keyframes stingerWipeSweep {
+  0% {
+    transform: translate3d(-115%, 0, 0) skewX(-18deg);
+    opacity: 1;
+  }
+  45% {
+    transform: translate3d(0%, 0, 0) skewX(-18deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(115%, 0, 0) skewX(-18deg);
+    opacity: 0.95;
+  }
+}
+
+.animate-stinger-sweep {
+  animation: stingerWipeSweep 0.9s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes fadeInFast {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-fadeIn {
+  animation: fadeInFast 0.45s ease-out forwards;
+}

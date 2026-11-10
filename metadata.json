@@ -1,0 +1,6 @@
+{
+  "name": "Worlds 2026 Grand Finals Broadcast Hub — GEN vs BLG",
+  "description": "League of Legends S16 Worlds 2026 Grand Finals (GEN vs BLG) interactive broadcast countdown hub with looping High Jump BGM, HD player highlight carousel, and real-time WebSocket danmaku.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,31 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+# 生产构建的公开配置（只含公开的 R2 域名，不含密钥）
+!.env.production
+
+# 本地临时产物（转码中间文件、原始素材备份、验证脚本）
+.asset-backup/
+.tmp_encode/
+.tmp_frames/
+.reencode.sh
+.verify*.mjs
+
+# 编辑器/助手工作目录（不属于项目内容）
+.workbuddy-ai/
+
+# R2 / 外部 CDN 上传用的原始画质视频（体积大，不进仓库）
+r2-upload/
+dist-test/
+.tmp_split/
+
+# 构建时由片段拼接生成的整片（CI 里生成，不入库）
+public/assets/aistudio/promo*_full.mp4
+
+# AI Studio 导出时的临时素材，代码未引用
+.aistudio/

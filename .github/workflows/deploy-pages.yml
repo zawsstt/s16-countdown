@@ -1,0 +1,84 @@
+name: Deploy to GitHub Pages
+
+# 备用部署通道：把站点发布到 GitHub Pages（项目页 https://zawsstt.github.io/s16-countdown/）
+# 与 Cloudflare 相比的差别：
+#   - GitHub Pages 单文件上限 100MB，所以**不需要分段**，构建时把片段无损拼回整片，
+#     播放完全没有接缝（Cloudflare 因为 25MiB 限制必须分段）。
+#   - 站点总量上限 1GB、带宽 100GB/月（软限制），视频看的人多了要注意。
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 安装 ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -version | head -1
+
+      - name: 把分段视频无损拼接成整片
+        run: |
+          set -e
+          cd public/assets/aistudio
+          concat() {
+            out="$1"; shift
+            list="$(mktemp)"
+            for f in "$@"; do echo "file '$PWD/$f'" >> "$list"; done
+            ffmpeg -hide_banner -loglevel error -y -f concat -safe 0 -i "$list" \
+              -c copy -movflags +faststart "$out"
+            rm -f "$list"
+            printf '  %-18s %s\n' "$out" "$(du -h "$out" | cut -f1)"
+          }
+          echo "拼接中："
+          concat promo1_full.mp4 promo1_p1.mp4 promo1_p2.mp4 promo1_p3.mp4 promo1_p4.mp4
+          concat promo2_full.mp4 promo2_p1.mp4 promo2_p2.mp4 promo2_p3.mp4
+          concat promo3_full.mp4 promo3_p1.mp4 promo3_p2.mp4 promo3_p3.mp4 promo3_p4.mp4
+          # 整片已生成，删掉片段避免重复打包（产物体积减半）
+          rm -f promo*_p*.mp4
+          echo "剩余视频："
+          ls -lh promo*_full.mp4
+
+      - name: 构建（整片模式，无接缝）
+        run: npm run build
+        env:
+          VITE_SINGLE_PROMO_FILE: 'true'
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
