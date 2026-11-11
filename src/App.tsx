@@ -84,9 +84,17 @@ export default function App() {
   // Real-time timestamp for Beijing Time Sunday Nov 15, 2026 03:00 AM Finals countdown
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   // Align periodic slot clock to start at a 3-minute (03:00 = 180s) countdown on page load/refresh
-  const [slotClockOffsetMs] = useState<number>(() =>
+  const [slotClockOffsetMs, setSlotClockOffsetMs] = useState<number>(() =>
     getInitialSlotClockOffsetMs(Date.now(), 180)
   );
+
+  /**
+   * 全屏影片播放期间把「宣传片倒计时 / 赛事前瞻倒计时」冻结。
+   * 冻结时记住当时的 slot 时间戳，退出后把暂停的时长补进 slotClockOffsetMs，
+   * 这样倒计时是从暂停处继续，而不是被跳过。
+   */
+  const [hourlyFrozenSlotNow, setHourlyFrozenSlotNow] = useState<number | null>(null);
+  const hourlyFrozenSlotNowRef = useRef<number | null>(null);
 
   // Broadcast media slot playback queue (handles single slot triggers & 45min/15min coincidence priority: promo_video -> data_preview)
   const [slotQueue, setSlotQueue] = useState<BroadcastSlotQueueState>({
@@ -276,7 +284,8 @@ export default function App() {
       const currentNow = Date.now();
       setNowMs(currentNow);
 
-      const currentSlotNow = currentNow + slotClockOffsetMs;
+      // 全屏影片期间时钟冻结，不触发任何宣传片/前瞻
+      const currentSlotNow = hourlyFrozenSlotNow ?? currentNow + slotClockOffsetMs;
       const currentSec = Math.floor(currentSlotNow / 1000);
       if (currentSec !== lastTriggeredSecondRef.current) {
         lastTriggeredSecondRef.current = currentSec;
@@ -293,7 +302,7 @@ export default function App() {
       }
     }, 1000);
     return () => clearInterval(interval);
-  }, [slotClockOffsetMs]);
+  }, [slotClockOffsetMs, hourlyFrozenSlotNow]);
 
   // Auto-advance broadcast right-window carousel every 12 seconds with smooth 500ms static crossfade
   useEffect(() => {
@@ -811,6 +820,27 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [nextHourlyAt]);
 
+  // 全屏影片开始 → 冻结两个倒计时并清空正在播的 slot；结束 → 把暂停时长补回时钟
+  useEffect(() => {
+    if (isHourlyVideoOpen) {
+      const frozen = Date.now() + slotClockOffsetMs;
+      hourlyFrozenSlotNowRef.current = frozen;
+      setHourlyFrozenSlotNow(frozen);
+      // 正在播的宣传片 / 赛事前瞻先收掉，避免被全屏影片盖住还在后台跑
+      setSlotQueue({ activeSlot: null, pendingSlots: [] });
+      return;
+    }
+    if (hourlyFrozenSlotNowRef.current !== null) {
+      // 让 slotNowMs 精确等于冻结值：offset = 冻结值 - 当前真实时间
+      // （不能用「累加暂停时长」，那会让倒计时多跳一个暂停时长）
+      setSlotClockOffsetMs(hourlyFrozenSlotNowRef.current - Date.now());
+      hourlyFrozenSlotNowRef.current = null;
+      setHourlyFrozenSlotNow(null);
+    }
+    // 只在开关变化时执行；slotClockOffsetMs 用闭包捕获的最新值即可
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isHourlyVideoOpen]);
+
   // 全屏影片期间让位给影片原声：暂停战歌，关闭后恢复
   useEffect(() => {
     const audio = audioRef.current;
@@ -826,7 +856,7 @@ export default function App() {
 
   const isBgmActive = isBgmPlaying && slotQueue.activeSlot !== 'promo_video';
 
-  const slotNowMs = nowMs + slotClockOffsetMs;
+  const slotNowMs = hourlyFrozenSlotNow ?? nowMs + slotClockOffsetMs;
   const activeCountdown = calculateFinalsCountdown(nowMs, getFinalsTargetTimestamp());
   const promoCountdown = calculatePromoSlotCountdown(slotNowMs);
   const dataPreviewCountdown = calculateDataPreviewSlotCountdown(slotNowMs);
