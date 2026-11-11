@@ -32,3 +32,4 @@ public/assets/aistudio/promo*_full.mp4
 
 # 图片替换前的原始备份
 .backup/
+shot_*.png
