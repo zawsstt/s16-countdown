@@ -68,13 +68,14 @@ export const TRANSITION_STINGER_SLOT: TransitionStingerSlotConfig = {
 /**
  * 宣传片倒计时播报列表（每 45 分钟自动触发一次）
  *
- * 播放顺序：片头 → 正片1（4段）→ 1.8s 黑屏 → 正片2（3段）→ 1.8s 黑屏 → 正片3（4段）
+ * 播放顺序：
+ *   开幕式预告片（原声，48s）→ 1.8s 黑屏 → 片头 → 正片1（4段）
+ *   → 1.8s 黑屏 → 正片2（3段）→ 1.8s 黑屏 → 正片3（4段）
  *
  * 为什么要拆成多段：
- *   Cloudflare Pages 单个文件硬上限 25 MiB。若把 70~83MB 的原片压进 25MiB，
- *   码率只剩 0.6~1.2 Mbps，画面明显发糊。改成「按场景切点无损切成多段」后，
- *   每段 <25MiB 但码率保持原样（2.2~3.0 Mbps），画质与原片完全一致。
- *   段与段之间用 seamlessNext 直接续播，不插黑屏，肉眼几乎察觉不到接缝。
+ *   GitHub Pages 单文件上限 100MB，本可以直接放整片；但仓库历史里已经存了分段，
+ *   再存一份整片会让仓库体积翻倍。所以仓库存片段，构建时用 ffmpeg -c copy 无损拼回整片。
+ *   本地开发直接用片段（段间无缝续播），线上用整片（零接缝）。
  *
  * 其它加载要点：
  *   - 所有片段都是 +faststart（moov 索引前置），开头几百 KB 就能起播
@@ -102,6 +103,14 @@ interface PromoGroupConfig {
 }
 
 const PROMO_GROUPS: PromoGroupConfig[] = [
+  {
+    // 队列第一支：决赛开幕式预告片，带原声（不设 muteAudio）
+    id: 'promo-0',
+    title: 'WORLDS 2026 · 决赛开幕式预告片',
+    subtitle: 'FINAL OPENING CEREMONY · PRESENTED BY MASTERCARD',
+    parts: ['promo_opening_ceremony_2026.mp4'],
+    posters: ['poster_promo_opening_ceremony.jpg'],
+  },
   {
     id: 'intro',
     title: 'WORLDS 2026 · 全球总决赛宣传片片头',
@@ -155,24 +164,11 @@ const INTRO_BUMPER_POSTER = 'assets/broadcast/poster_promo_opening.jpg';
 function buildPromoSlot(): PromoVideoSlotItem[] {
   const list: PromoVideoSlotItem[] = [];
 
-  // 1. 片头
-  list.push({
-    id: 'worlds-2026-promo-intro-bumper',
-    title: PROMO_GROUPS[0].title,
-    subtitle: PROMO_GROUPS[0].subtitle,
-    videoUrl: INTRO_BUMPER_URL,
-    posterUrl: INTRO_BUMPER_POSTER,
-    groupId: PROMO_GROUPS[0].id,
-    seamlessNext: true,
-    muteAudio: true,
-  });
-
-  // 2. 三支正片
-  //    - 默认：按段展开（Cloudflare 单文件上限 25MiB，必须分段）
-  //    - VITE_SINGLE_PROMO_FILE=true：用无损拼接好的整片，完全无接缝（GitHub Pages）
+  // 整片模式：VITE_SINGLE_PROMO_FILE=true 时用构建期无损拼接好的整片，零接缝（线上）
+  // 否则用分段（本地开发，段间用 seamlessNext 续播）
   const useSingleFile = import.meta.env.VITE_SINGLE_PROMO_FILE === 'true';
 
-  PROMO_GROUPS.slice(1).forEach((group) => {
+  const expandGroup = (group: PromoGroupConfig) => {
     const files = useSingleFile && group.whole ? [group.whole] : group.parts;
     files.forEach((part, pi) => {
       const isLastPart = pi === files.length - 1;
@@ -188,7 +184,26 @@ function buildPromoSlot(): PromoVideoSlotItem[] {
         muteAudio: group.muteAudio,
       });
     });
+  };
+
+  // 1. 开幕式预告片（队列第一位，默认原声播放）
+  expandGroup(PROMO_GROUPS[0]);
+
+  // 2. 片头引导短片（静音，播完直接接正片1，不插黑屏）
+  const introGroup = PROMO_GROUPS[1];
+  list.push({
+    id: 'worlds-2026-promo-intro-bumper',
+    title: introGroup.title,
+    subtitle: introGroup.subtitle,
+    videoUrl: INTRO_BUMPER_URL,
+    posterUrl: INTRO_BUMPER_POSTER,
+    groupId: introGroup.id,
+    seamlessNext: true,
+    muteAudio: true,
   });
+
+  // 3. 三支正片
+  PROMO_GROUPS.slice(2).forEach(expandGroup);
 
   return list;
 }

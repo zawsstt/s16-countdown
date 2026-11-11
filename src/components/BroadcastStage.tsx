@@ -113,6 +113,7 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
   // Persistent pre-warmed <video> refs for all items in PROMO_VIDEO_SLOT + Stinger
   const promoVideoRefs = useRef<(HTMLVideoElement | null)[]>([]);
   const stingerVideoRef = useRef<HTMLVideoElement>(null);
+  const bgLoopVideoRef = useRef<HTMLVideoElement>(null);
   const prevActiveSlotRef = useRef<BroadcastSlotId | null>(slotQueue.activeSlot);
   const blackScreenTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 记录哪些视频已经被「点名」开始拉流，避免重复 load() 打断已有缓冲
@@ -478,7 +479,7 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
       ensurePromoVideoBuffering(promoItemIndex);
     }
 
-    // 卡顿看门狗：每 2 秒检查一次画面是否在推进
+    // 卡顿看门狗：每 800ms 检查一次画面是否在推进
     promoStallRef.current = { time: vid.currentTime, ticks: 0 };
     const watchdog = setInterval(() => {
       if (cancelled || vid.paused) return;
@@ -490,7 +491,35 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
       state.ticks += 1;
 
       if (state.ticks === 3) {
-        // 6 秒没动：重新拉流并重试播放（文件已 faststart，重启代价很小）
+        // 2.4 秒画面不动。先判断是「网络不够」还是「解码器挂起」：
+        // 若当前位置之后还有 1.5 秒以上缓冲，说明数据早就到了，是 D3D11 硬件解码器
+        // 偶发挂起（Chromium 会反复把媒体管线打到 kSuspended）。
+        // 此时微调 currentTime 会强制重建解码管线，几十毫秒就能恢复，比 load() 轻得多，
+        // 画面只跳过 0.06 秒，肉眼几乎察觉不到。
+        let bufferedAhead = 0;
+        try {
+          for (let i = 0; i < vid.buffered.length; i++) {
+            if (vid.buffered.start(i) <= vid.currentTime && vid.currentTime <= vid.buffered.end(i)) {
+              bufferedAhead = vid.buffered.end(i) - vid.currentTime;
+              break;
+            }
+          }
+        } catch {
+          // ignore
+        }
+        if (bufferedAhead > 1.5) {
+          try {
+            vid.currentTime = vid.currentTime + 0.06;
+          } catch {
+            // ignore
+          }
+          promoStallRef.current = { time: vid.currentTime, ticks: 0 };
+          return;
+        }
+      }
+
+      if (state.ticks === 8) {
+        // 6.4 秒没动：重新拉流并重试播放（文件已 faststart，重启代价很小）
         setIsPromoBuffering(true);
         playRequested = false;
         const resumeAt = vid.currentTime;
@@ -513,12 +542,12 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
           );
         }
         requestPlay();
-      } else if (state.ticks >= 10) {
-        // 20 秒仍无任何进展：跳过这一支，保证导播流程能继续
+      } else if (state.ticks >= 20) {
+        // 16 秒仍无任何进展：跳过这一支，保证导播流程能继续
         console.warn('[promo] 长时间无进展，跳过：', item.videoUrl);
         advancePromoVideoOrCompleteSlot();
       }
-    }, 2000);
+    }, 800);
 
     return () => {
       cancelled = true;
@@ -621,6 +650,25 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
   const currentDataItem = MATCH_DATA_PREVIEW_SLOT[dataItemIndex] || MATCH_DATA_PREVIEW_SLOT[0];
   const isShowingPromoOverlay = displayedSlot === 'promo_video';
   const isShowingDataOverlay = displayedSlot === 'data_preview';
+
+  /**
+   * 全屏遮罩（宣传片 / 赛事前瞻）盖住主页时，把左侧那块背景循环视频暂停掉。
+   *
+   * 它虽然被遮住看不见，但 autoPlay+loop 仍在后台持续解码。Chromium 的硬件解码器
+   * （D3D11VideoDecoder）数量有限，它和宣传片抢同一个解码器时，宣传片的媒体管线会被
+   * 反复挂起（kSuspended），表现为画面卡在某几秒、readyState 从 4 掉到 2、缓冲明明
+   * 还有却不再推进。暂停后宣传片即可正常播放。
+   */
+  useEffect(() => {
+    const v = bgLoopVideoRef.current;
+    if (!v) return;
+    const covered = displayedSlot === 'promo_video' || displayedSlot === 'data_preview';
+    if (covered) {
+      if (!v.paused) v.pause();
+    } else {
+      v.play().catch(() => {});
+    }
+  }, [displayedSlot]);
 
   return (
     <div
@@ -808,7 +856,15 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
       <div className="relative w-full aspect-[810/648] md:aspect-auto md:absolute md:left-0 md:top-[24.68%] md:w-[42.23%] md:h-[60.11%] z-10 overflow-hidden">
         {/* Phase-locked real 1080p looping broadcast matchup video (GEN vs BLG, 0 - 0) */}
         <video
-          src="assets/broadcast/gen_vs_blg_loop.mp4"
+          ref={bgLoopVideoRef}
+          /* 全屏遮罩期间直接卸掉 src：暂停只是停止渲染，解码器仍被占着，
+             会和宣传片抢硬件解码资源（表现为宣传片卡在某几秒不动）。
+             卸掉后浏览器会真正释放解码器，回到主页再重新拉流（文件仅 1MB 级）。 */
+          src={
+            isShowingPromoOverlay || isShowingDataOverlay
+              ? undefined
+              : 'assets/broadcast/gen_vs_blg_loop.mp4'
+          }
           poster="assets/broadcast/gen_vs_blg_panel.jpg"
           autoPlay
           loop
@@ -997,18 +1053,27 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
         {PROMO_VIDEO_SLOT.map((item, idx) => {
           const isCurrentVideo =
             isShowingPromoOverlay && promoItemIndex === idx && !isInterPromoBlackScreen;
+          /* 只给「当前这支」和「下一支」挂 src，其余元素不加载。
+             十几个 <video> 同时拉流会占满 Chromium 的硬件解码器（D3D11VideoDecoder），
+             当前视频的媒体管线被反复挂起（kSuspended），表现为画面卡在某几秒、
+             readyState 从 4 掉到 2、缓冲明明还在却不再推进。
+             只保留 2 个加载窗口后，解码器够用，播放稳定。
+             未加载的元素仍显示 poster 首帧，切过去时再拉流。 */
+          const shouldAttachSrc = idx === promoItemIndex || idx === promoItemIndex + 1;
           return (
             <video
               key={item.id}
               ref={(el) => {
                 promoVideoRefs.current[idx] = el;
               }}
-              src={mediaUrl(item.videoUrl)}
+              src={shouldAttachSrc ? mediaUrl(item.videoUrl) : undefined}
               poster={item.posterUrl}
               preload={idx === 0 ? 'auto' : 'metadata'}
               playsInline
               disablePictureInPicture
-              muted={item.muteAudio ? true : undefined}
+              /* 只有「当前正在播的这一支」允许出声，其余全部静音，
+                 避免多个媒体元素同时争抢音频输出通道 */
+              muted={item.muteAudio || !isCurrentVideo ? true : isPromoVideoMuted}
               className={`absolute inset-0 w-full h-full object-contain bg-black ${
                 isCurrentVideo ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'
               }`}
