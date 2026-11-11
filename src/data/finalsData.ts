@@ -49,6 +49,15 @@ export const BROADCAST_SLIDES: BroadcastSlide[] = [
     photographerOrSource: 'WORLDS 2026 OFFICIAL FEED',
   },
   {
+    id: 'carousel-upload-2-flash-your-support',
+    title: 'FLASH YOUR SUPPORT · 全球总决赛战队联名表情助威',
+    subtitle: '官方联赛战队应援表情包 · 收益与各大赛区一队共享',
+    category: 'EVENT',
+    imageUrl: 'assets/aistudio/__2_effbf4c7.png',
+    badgeText: 'FLASH YOUR SUPPORT',
+    photographerOrSource: 'WORLDS 2026 OFFICIAL FEED',
+  },
+  {
     id: 'carousel-upload-3-blg-signature',
     title: 'BLG 五人组 Signature Moment 晋级镜头签名',
     subtitle: 'Bin / Knight / Xun / Viper / ON 晋级时刻全员镜头签名',

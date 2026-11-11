@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
 import {
   Volume2,
   VolumeX,
@@ -8,9 +8,16 @@ import {
   SlidersHorizontal,
   EyeOff,
   SkipForward,
+  BarChart3,
 } from 'lucide-react';
 import { BroadcastStage } from './components/BroadcastStage';
 import { DanmakuPlugin } from './components/DanmakuPlugin';
+// 赛前数据面板依赖 recharts（约 400KB），改成按需加载：
+// 只有用户点「赛前数据统计」时才下载这个 chunk，首屏不受影响。
+const PreMatchStatsPanel = lazy(() =>
+  import('./components/PreMatchStatsPanel').then((m) => ({ default: m.PreMatchStatsPanel }))
+);
+import { PreloadGateScreen } from './components/PreloadGateScreen';
 import { BROADCAST_SLIDES } from './data/finalsData';
 import {
   calculateFinalsCountdown,
@@ -23,6 +30,8 @@ import {
   BroadcastSlotQueueState,
   BroadcastSlotId,
   mergeDanmakuMessage,
+  selectLeastCrowdedDanmakuLane,
+  DANMAKU_LANE_COUNT,
 } from './utils/broadcastLogic';
 import {
   BGM_PLAYLIST,
@@ -43,6 +52,18 @@ import type { DanmakuMessage } from '../server';
 type DanmakuSource = 'supabase' | 'local';
 
 export default function App() {
+  // 游戏式进场前资源预加载门控（支持 ?skipPreload=1 快捷跳过）
+  const [isPreloadComplete, setIsPreloadComplete] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('skipPreload') === '1';
+    }
+    return false;
+  });
+
+  // 导播控制台「赛前数据统计」Recharts 面板开关
+  const [isPreMatchStatsOpen, setIsPreMatchStatsOpen] = useState<boolean>(false);
+
   // Real-time timestamp for Beijing Time Sunday Nov 15, 2026 03:00 AM Finals countdown
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   // Align periodic slot clock to start at a 3-minute (03:00 = 180s) countdown on page load/refresh
@@ -65,7 +86,7 @@ export default function App() {
   const [isHudMinimized, setIsHudMinimized] = useState(false);
 
   // ==========================================================================
-  // 背景音乐：8 首战歌顺序循环播放（进入赛事数据前瞻时强制随机换一首）
+  // 背景音乐：顺序循环播放（进入赛事数据前瞻时强制随机换一首）
   // ==========================================================================
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [trackIndex, setTrackIndex] = useState(0);
@@ -73,13 +94,9 @@ export default function App() {
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(0.65);
 
-  // 当前曲目下标（用 ref 保存，供 ended / 切页回调读取最新值）
   const trackIndexRef = useRef(0);
-  // 用户是否希望有声音（暂停/静音/宣传片期间为 false）
   const wantsPlayRef = useRef(true);
-  // 当前播报 slot（供音乐解锁回调读取最新值）
   const slotQueueRef = useRef<BroadcastSlotId | null>(slotQueue.activeSlot);
-  // 上一帧的 slot（用于判断「刚进入」某个页面）
   const prevSlotRef = useRef<BroadcastSlotId | null>(slotQueue.activeSlot);
 
   const currentTrack = BGM_PLAYLIST[trackIndex] || BGM_PLAYLIST[0];
@@ -88,7 +105,10 @@ export default function App() {
   const loadTrack = useCallback((index: number, autoPlay: boolean) => {
     const audio = audioRef.current;
     if (!audio) return;
-    const safeIndex = BGM_TRACK_COUNT > 0 ? ((index % BGM_TRACK_COUNT) + BGM_TRACK_COUNT) % BGM_TRACK_COUNT : 0;
+    const safeIndex =
+      BGM_TRACK_COUNT > 0
+        ? ((index % BGM_TRACK_COUNT) + BGM_TRACK_COUNT) % BGM_TRACK_COUNT
+        : 0;
     trackIndexRef.current = safeIndex;
     setTrackIndex(safeIndex);
     audio.src = BGM_PLAYLIST[safeIndex].url;
@@ -98,7 +118,6 @@ export default function App() {
       // ignore
     }
     if (!autoPlay) return;
-    // 状态交给 audio 的 play/pause 事件同步，这里只负责发起播放
     audio.play().catch(() => {
       // 自动播放被浏览器拦截时保持暂停态，首次交互后会由 unlockOnGesture 解锁
     });
@@ -153,11 +172,8 @@ export default function App() {
   const [showDanmakuOverlay, setShowDanmakuOverlay] = useState(true);
   const [danmakuOpacity, setDanmakuOpacity] = useState(0.95);
 
-  // 弹幕数据来源 + 高频消息合批（避免 Realtime 突发导致重渲染卡顿）
   const danmakuSourceRef = useRef<DanmakuSource>('local');
-  // WebSocket 重连退避时长（毫秒）
   const reconnectDelayRef = useRef(3000);
-  // 用于驱动副作用的状态：probing = 正在探测 Supabase；supabase = 已接管；local = 退回本地 ws
   const [danmakuSource, setDanmakuSource] = useState<'probing' | DanmakuSource>('probing');
   const pendingDanmakuRef = useRef<DanmakuMessage[]>([]);
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -224,20 +240,15 @@ export default function App() {
     loadTrack(0, true);
 
     const handleEnded = () => {
-      // 顺序循环到下一首
       loadTrack(getNextTrackIndex(trackIndexRef.current), wantsPlayRef.current);
     };
     audio.addEventListener('ended', handleEnded);
 
-    // 播放状态以 audio 元素的实际事件为准，
-    // 避免 play() 的异步回调抢在 pause() 之后把状态改回「播放中」
     const syncPlayState = () => setIsBgmPlaying(!audio.paused);
     audio.addEventListener('play', syncPlayState);
     audio.addEventListener('pause', syncPlayState);
 
     const unlockOnGesture = () => {
-      // 延后一拍：让本次点击的 onClick（例如触发宣传片）先执行完，
-      // 否则宣传片刚触发就被这里重新拉起 BGM，出现一瞬的串音
       window.removeEventListener('pointerdown', unlockOnGesture);
       setTimeout(() => {
         const current = audioRef.current;
@@ -259,7 +270,6 @@ export default function App() {
       audio.removeEventListener('pause', syncPlayState);
       window.removeEventListener('pointerdown', unlockOnGesture);
     };
-    // 仅初始化一次
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -271,10 +281,6 @@ export default function App() {
     if (audioRef.current) audioRef.current.muted = isMuted;
   }, [isMuted]);
 
-  // 切页联动：
-  //  promo_video → 暂停音乐（保留宣传片原声）
-  //  data_preview → 必须换成一首「随机的、和当前不同」的曲目，从头播放
-  //  回到主页 → 接着放当前这首
   useEffect(() => {
     slotQueueRef.current = slotQueue.activeSlot;
   }, [slotQueue.activeSlot]);
@@ -294,15 +300,12 @@ export default function App() {
     }
 
     if (slot === 'data_preview') {
-      // 强制随机换一首（与当前不同的曲目），并从头播放
       const nextIndex = getRandomDifferentTrackIndex(trackIndexRef.current);
       wantsPlayRef.current = true;
       loadTrack(nextIndex, true);
       return;
     }
 
-    // 回到主页：同样换一首新的（与刚才那首不同），
-    // 避免「进去换了、出来没换」的突兀感，也让每次页面往返都有新的听感
     if (prev === 'promo_video' || prev === 'data_preview') {
       const nextIndex = getRandomDifferentTrackIndex(trackIndexRef.current);
       wantsPlayRef.current = true;
@@ -380,11 +383,6 @@ export default function App() {
     };
   }, [queueDanmaku]);
 
-  /**
-   * 本地 WebSocket 通道（仅在 Supabase 不可用时启用）。
-   * 部署到 Cloudflare Pages 这类纯静态托管时没有 /ws 服务端，Supabase 能连上就不会走这里，
-   * 因此也不会出现「每 3 秒重连一次」的无谓请求。
-   */
   useEffect(() => {
     if (danmakuSource !== 'local') return;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -408,7 +406,6 @@ export default function App() {
         try {
           const data = JSON.parse(event.data);
           if (data.type === 'init') {
-            // Supabase 已接管弹幕时，忽略本地服务的历史弹幕（只保留在线人数）
             if (danmakuSourceRef.current === 'local' && Array.isArray(data.danmaku)) {
               setDanmakuList(data.danmaku);
             }
@@ -432,8 +429,6 @@ export default function App() {
       ws.onclose = () => {
         if (!isUnmounted) {
           setIsConnected(false);
-          // 退避重连：3s → 6s → 12s → 24s → 30s 封顶。
-          // 纯静态托管（无 /ws 服务端）下不会一直每 3 秒空转。
           reconnectTimer = setTimeout(connectWs, reconnectDelayRef.current);
           reconnectDelayRef.current = Math.min(reconnectDelayRef.current * 2, 30000);
         }
@@ -453,7 +448,7 @@ export default function App() {
     };
   }, [queueDanmaku, danmakuSource]);
 
-  // Optimistic + Supabase/Server-synced Danmaku creation
+  // Optimistic + Anti-Overlap Lane Selection + Supabase/Server-synced Danmaku creation
   const handleSendDanmaku = useCallback(
     (payload: {
       text: string;
@@ -461,68 +456,69 @@ export default function App() {
       team: 'GEN' | 'BLG' | 'NEUTRAL';
       color: string;
     }) => {
-      const id = `dm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      const lane = Math.floor(Math.random() * 7);
-      const optimisticMsg: DanmakuMessage = {
-        id,
-        text: payload.text,
-        author: payload.author,
-        team: payload.team,
-        color: payload.color,
-        timestamp: Date.now(),
-        lane,
-        likes: 1,
-      };
+      const now = Date.now();
+      const id = `dm-${now}-${Math.random().toString(36).slice(2, 7)}`;
 
-      setDanmakuList((prev) => mergeDanmakuMessage(prev, optimisticMsg, DANMAKU_MAX_ITEMS));
+      setDanmakuList((prev) => {
+        // 使用防重叠轨道算法挑选当前最空闲的弹幕轨道
+        const lane = selectLeastCrowdedDanmakuLane(prev, now, DANMAKU_LANE_COUNT);
+        const optimisticMsg: DanmakuMessage = {
+          id,
+          text: payload.text,
+          author: payload.author,
+          team: payload.team,
+          color: payload.color,
+          timestamp: now,
+          lane,
+          likes: 1,
+        };
 
-      if (danmakuSourceRef.current === 'supabase') {
-        insertDanmaku(optimisticMsg).then((ok) => {
-          if (ok) return;
-          // 写库失败则退回本地服务，保证这条弹幕不会丢
-          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-            wsRef.current.send(
-              JSON.stringify({
-                type: 'danmaku:create',
-                id,
-                text: payload.text,
-                author: payload.author,
-                team: payload.team,
-                color: payload.color,
-                lane,
-              })
-            );
-          }
-        });
-        return;
-      }
+        if (danmakuSourceRef.current === 'supabase') {
+          insertDanmaku(optimisticMsg).then((ok) => {
+            if (ok) return;
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+              wsRef.current.send(
+                JSON.stringify({
+                  type: 'danmaku:create',
+                  id,
+                  text: payload.text,
+                  author: payload.author,
+                  team: payload.team,
+                  color: payload.color,
+                  lane,
+                })
+              );
+            }
+          });
+        } else if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(
+            JSON.stringify({
+              type: 'danmaku:create',
+              id,
+              text: payload.text,
+              author: payload.author,
+              team: payload.team,
+              color: payload.color,
+              lane,
+            })
+          );
+        } else {
+          fetch('/api/danmaku', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              id,
+              text: payload.text,
+              author: payload.author,
+              team: payload.team,
+              color: payload.color,
+              lane,
+            }),
+          }).catch(() => {});
+        }
 
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(
-          JSON.stringify({
-            type: 'danmaku:create',
-            id,
-            text: payload.text,
-            author: payload.author,
-            team: payload.team,
-            color: payload.color,
-            lane,
-          })
-        );
-      } else {
-        fetch('/api/danmaku', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id,
-            text: payload.text,
-            author: payload.author,
-            team: payload.team,
-            color: payload.color,
-            lane,
-          }),
-        }).catch(() => {});
-      }
+        return mergeDanmakuMessage(prev, optimisticMsg, DANMAKU_MAX_ITEMS);
+      });
     },
     []
   );
@@ -546,13 +542,14 @@ export default function App() {
   }, []);
 
   const handleTriggerCoincidentSlots = useCallback(() => {
-    // Simulates :00 or :30 coincidence where both 30m Promo Video and 15m Data Preview trigger together
     setSlotQueue({
       activeSlot: null,
       pendingSlots: [],
     });
     setTimeout(() => {
-      setSlotQueue(enqueueBroadcastSlots({ activeSlot: null, pendingSlots: [] }, ['data_preview', 'promo_video']));
+      setSlotQueue(
+        enqueueBroadcastSlots({ activeSlot: null, pendingSlots: [] }, ['data_preview', 'promo_video'])
+      );
     }, 20);
   }, []);
 
@@ -564,11 +561,8 @@ export default function App() {
     setSlotQueue({ activeSlot: null, pendingSlots: [] });
   }, []);
 
-  // 宣传片期间音乐必然是停的，HUD 显示直接跟当前页面绑定，
-  // 避免 play()/pause() 的异步回调把状态改错（实测偶发显示成"播放中"）
   const isBgmActive = isBgmPlaying && slotQueue.activeSlot !== 'promo_video';
 
-  // Compute active countdowns (with 3-minute initial countdown offset for periodic slots)
   const slotNowMs = nowMs + slotClockOffsetMs;
   const activeCountdown = calculateFinalsCountdown(nowMs, getFinalsTargetTimestamp());
   const promoCountdown = calculatePromoSlotCountdown(slotNowMs);
@@ -579,7 +573,12 @@ export default function App() {
       id="broadcast-monitor"
       className="min-h-screen md:h-screen w-full bg-[#000312] text-slate-100 flex flex-col md:items-center md:justify-center overflow-x-hidden md:overflow-hidden relative"
     >
-      {/* 单一音频元素：8 首战歌顺序循环 */}
+      {/* 游戏式进场前资源预加载门控界面 */}
+      {!isPreloadComplete && (
+        <PreloadGateScreen onReady={() => setIsPreloadComplete(true)} />
+      )}
+
+      {/* 单一音频元素：战歌顺序循环 */}
       <audio ref={audioRef} preload="auto" />
 
       {/* =====================================================================
@@ -606,7 +605,6 @@ export default function App() {
 
       {/* =====================================================================
           FLOATING BROADCAST DIRECTOR HUD & REAL-TIME DANMAKU PLUGIN DOCK
-          Docked cleanly at the bottom edge on Desktop, or below screen on Mobile
          ===================================================================== */}
       {isHudMinimized ? (
         <button
@@ -621,111 +619,143 @@ export default function App() {
       ) : (
         <section
           aria-label="导播台悬浮控制栏与实时弹幕插件"
-          className="w-full md:fixed md:bottom-2.5 md:left-3 md:right-3 z-40 flex flex-col xl:flex-row items-stretch xl:items-end justify-between gap-2 px-2.5 py-2 md:p-0 pointer-events-none"
+          className="w-full md:fixed md:bottom-2.5 md:left-3 md:right-3 z-[48] flex flex-col gap-1.5 px-2.5 py-2 md:p-0 pointer-events-none"
         >
-          {/* Left Pill: BGM Loop + Beijing Time Sunday 03:00 Finals Info + Coincident Slot Queue Test */}
-          <div className="pointer-events-auto flex flex-wrap lg:flex-nowrap items-center gap-1.5 rounded-xl border border-[#0051ff]/40 bg-[#03081c]/90 backdrop-blur-md px-2.5 py-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.8)]">
-            {/* BGM Play/Pause */}
-            <button
-              type="button"
-              onClick={toggleBgmPlay}
-              title={currentTrack.subtitle}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all whitespace-nowrap shrink-0 cursor-pointer ${
-                isBgmActive
-                  ? 'bg-[#00d2ff] text-slate-950 shadow-[0_0_14px_rgba(0,210,255,0.4)]'
-                  : 'bg-[#0051ff] hover:bg-[#0066ff] text-white'
-              }`}
+          {/* Recharts 赛前数据统计弹出面板（按需加载，未打开时不下载图表库） */}
+          {isPreMatchStatsOpen && (
+            <Suspense
+              fallback={
+                <div className="pointer-events-auto mb-2 flex items-center gap-2 rounded-xl border border-[#0051ff]/40 bg-[#03081c]/95 px-3 py-2 text-[11px] font-bold text-slate-300">
+                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/25 border-t-[#00d2ff]" />
+                  赛前数据加载中…
+                </div>
+              }
             >
-              {isBgmActive ? (
-                <>
-                  <Pause className="w-3 h-3 shrink-0" />
-                  <span>
-                    战歌播放中 · {currentTrack.title}
-                    <span className="opacity-70 ml-1">
-                      {trackIndex + 1}/{BGM_TRACK_COUNT}
+              <PreMatchStatsPanel isOpen onClose={() => setIsPreMatchStatsOpen(false)} />
+            </Suspense>
+          )}
+
+          <div className="flex flex-col xl:flex-row items-stretch xl:items-end justify-between gap-2">
+            {/* Left Pill: BGM Loop + Pre-Match Stats Toggle + Beijing Time Sunday 03:00 Finals Info */}
+            <div className="pointer-events-auto flex flex-wrap lg:flex-nowrap items-center gap-1.5 rounded-xl border border-[#0051ff]/40 bg-[#03081c]/90 backdrop-blur-md px-2.5 py-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.8)]">
+              {/* BGM Play/Pause */}
+              <button
+                type="button"
+                onClick={toggleBgmPlay}
+                title={currentTrack.subtitle}
+                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all whitespace-nowrap shrink-0 cursor-pointer ${
+                  isBgmActive
+                    ? 'bg-[#00d2ff] text-slate-950 shadow-[0_0_14px_rgba(0,210,255,0.4)]'
+                    : 'bg-[#0051ff] hover:bg-[#0066ff] text-white'
+                }`}
+              >
+                {isBgmActive ? (
+                  <>
+                    <Pause className="w-3 h-3 shrink-0" />
+                    <span>
+                      战歌播放中 · {currentTrack.title}
+                      <span className="opacity-70 ml-1">
+                        {trackIndex + 1}/{BGM_TRACK_COUNT}
+                      </span>
                     </span>
-                  </span>
-                </>
-              ) : (
-                <>
-                  <Play className="w-3 h-3 shrink-0" />
-                  <span>
-                    播放战歌 · {currentTrack.title}
-                    <span className="opacity-70 ml-1">
-                      {trackIndex + 1}/{BGM_TRACK_COUNT}
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3 h-3 shrink-0" />
+                    <span>
+                      播放战歌 · {currentTrack.title}
+                      <span className="opacity-70 ml-1">
+                        {trackIndex + 1}/{BGM_TRACK_COUNT}
+                      </span>
                     </span>
-                  </span>
-                </>
-              )}
-            </button>
+                  </>
+                )}
+              </button>
 
-            {/* Next Track */}
-            <button
-              type="button"
-              onClick={handleNextTrack}
-              aria-label="下一首战歌"
-              title="切到下一首战歌"
-              className="p-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-200 border border-white/10 shrink-0 cursor-pointer"
-            >
-              <SkipForward className="w-3.5 h-3.5" />
-            </button>
+              {/* Next Track */}
+              <button
+                type="button"
+                onClick={handleNextTrack}
+                aria-label="下一首战歌"
+                title="切到下一首战歌"
+                className="p-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-200 border border-white/10 shrink-0 cursor-pointer"
+              >
+                <SkipForward className="w-3.5 h-3.5" />
+              </button>
 
-            {/* Mute & Volume */}
-            <button
-              type="button"
-              onClick={toggleMute}
-              aria-label={isMuted ? '取消静音' : '静音背景音乐'}
-              className="p-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-200 border border-white/10 shrink-0 cursor-pointer"
-            >
-              {isMuted ? (
-                <VolumeX className="w-3.5 h-3.5 text-rose-400" />
-              ) : (
-                <Volume2 className="w-3.5 h-3.5 text-[#00d2ff]" />
-              )}
-            </button>
-            <input
-              type="range"
-              aria-label="背景音乐音量调节"
-              min={0}
-              max={1}
-              step={0.05}
-              value={isMuted ? 0 : volume}
-              onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
-              className="w-14 accent-[#00d2ff] cursor-pointer hidden sm:block shrink-0"
-            />
+              {/* Mute & Volume */}
+              <button
+                type="button"
+                onClick={toggleMute}
+                aria-label={isMuted ? '取消静音' : '静音背景音乐'}
+                className="p-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-200 border border-white/10 shrink-0 cursor-pointer"
+              >
+                {isMuted ? (
+                  <VolumeX className="w-3.5 h-3.5 text-rose-400" />
+                ) : (
+                  <Volume2 className="w-3.5 h-3.5 text-[#00d2ff]" />
+                )}
+              </button>
+              <input
+                type="range"
+                aria-label="背景音乐音量调节"
+                min={0}
+                max={1}
+                step={0.05}
+                value={isMuted ? 0 : volume}
+                onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
+                className="w-14 accent-[#00d2ff] cursor-pointer hidden sm:block shrink-0"
+              />
 
-            <div className="h-4 w-[1px] bg-white/15 mx-0.5 hidden sm:block" />
+              <div className="h-4 w-[1px] bg-white/15 mx-0.5 hidden sm:block" />
 
-            {/* Official Beijing Time Sunday 03:00 AM Finals Time Badge */}
-            <div className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-[#001861]/90 border border-[#0051ff]/50 text-[11px] font-bold text-white whitespace-nowrap shrink-0">
-              <Calendar className="w-3 h-3 text-[#00d2ff] shrink-0" />
-              <span>北京时间 11月15日 (周日) 03:00 决赛</span>
+              {/* Quick Toggle Button for Pre-Match Statistics Panel (Recharts) */}
+              <button
+                type="button"
+                data-testid="toggle-pre-match-stats-btn"
+                onClick={() => setIsPreMatchStatsOpen((prev) => !prev)}
+                aria-expanded={isPreMatchStatsOpen}
+                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-extrabold border transition-all whitespace-nowrap shrink-0 cursor-pointer ${
+                  isPreMatchStatsOpen
+                    ? 'bg-[#f5b800] text-slate-950 border-[#f5b800] shadow-[0_0_14px_rgba(245,184,0,0.45)]'
+                    : 'bg-[#001861]/90 hover:bg-[#002b99] text-[#00d2ff] hover:text-white border-[#00d2ff]/45'
+                }`}
+              >
+                <BarChart3 className="w-3.5 h-3.5 shrink-0" />
+                <span>赛前数据统计</span>
+              </button>
+
+              {/* Official Beijing Time Sunday 03:00 AM Finals Time Badge */}
+              <div className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-[#001861]/90 border border-[#0051ff]/50 text-[11px] font-bold text-white whitespace-nowrap shrink-0">
+                <Calendar className="w-3 h-3 text-[#00d2ff] shrink-0" />
+                <span>北京时间 11月15日 (周日) 03:00 决赛</span>
+              </div>
+
+              {/* Hide HUD button for pure OBS feed */}
+              <button
+                type="button"
+                onClick={() => setIsHudMinimized(true)}
+                title="隐藏底部控制台（纯净导播流模式）"
+                aria-label="隐藏底部控制台"
+                className="p-1 rounded-md bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white border border-white/10 cursor-pointer ml-auto sm:ml-0"
+              >
+                <EyeOff className="w-3.5 h-3.5" />
+              </button>
             </div>
 
-            {/* Hide HUD button for pure OBS feed */}
-            <button
-              type="button"
-              onClick={() => setIsHudMinimized(true)}
-              title="隐藏底部控制台（纯净导播流模式）"
-              aria-label="隐藏底部控制台"
-              className="p-1 rounded-md bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white border border-white/10 cursor-pointer ml-auto sm:ml-0"
-            >
-              <EyeOff className="w-3.5 h-3.5" />
-            </button>
+            {/* Right Widget: Real-Time Danmaku Launcher & Interactive Drawer */}
+            <DanmakuPlugin
+              danmakuList={danmakuList}
+              onlineCount={onlineCount}
+              isConnected={isConnected}
+              showDanmakuOverlay={showDanmakuOverlay}
+              onToggleDanmakuOverlay={() => setShowDanmakuOverlay((prev) => !prev)}
+              danmakuOpacity={danmakuOpacity}
+              onChangeDanmakuOpacity={setDanmakuOpacity}
+              onSendDanmaku={handleSendDanmaku}
+              onLikeDanmaku={handleLikeDanmaku}
+            />
           </div>
-
-          {/* Right Widget: Real-Time Danmaku Launcher & Interactive Drawer */}
-          <DanmakuPlugin
-            danmakuList={danmakuList}
-            onlineCount={onlineCount}
-            isConnected={isConnected}
-            showDanmakuOverlay={showDanmakuOverlay}
-            onToggleDanmakuOverlay={() => setShowDanmakuOverlay((prev) => !prev)}
-            danmakuOpacity={danmakuOpacity}
-            onChangeDanmakuOpacity={setDanmakuOpacity}
-            onSendDanmaku={handleSendDanmaku}
-            onLikeDanmaku={handleLikeDanmaku}
-          />
         </section>
       )}
     </main>

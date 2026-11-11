@@ -1,6 +1,6 @@
 # WORLDS 2026 总决赛倒计时导播台
 
-GEN vs BLG 冠亚军决赛的实时导播倒计时页面：整点自动播报宣传片、赛事数据前瞻轮播、弹幕助威、选手画廊。
+GEN vs BLG 冠亚军决赛的实时导播倒计时页面：整点自动播报宣传片、赛事前瞻轮播、实时弹幕、赛前数据面板、选手画廊。
 
 ## 本地运行
 
@@ -16,6 +16,9 @@ npm run build        # 产物在 dist/
 NODE_ENV=production npm run dev
 ```
 
+> 首屏会先过一个「资源预加载」画面（约 2–3 秒），把所有图片、转场视频、音轨预解码完再进场，
+> 避免进场后第一支宣传片还在转圈。想跳过调试可加 `?skipPreload=1`。
+
 ## 目录结构
 
 ```
@@ -23,13 +26,15 @@ src/
   App.tsx                     页面主框架、倒计时与弹幕状态
   components/
     BroadcastStage.tsx        1080p 导播台画面（宣传片 / 数据前瞻 / 转场 Stinger）
-    DanmakuPlugin.tsx         弹幕层
+    DanmakuPlugin.tsx         弹幕层（防重叠轨道 + DOM 虚拟化）
+    PreMatchStatsPanel.tsx    赛前数据面板（Recharts，按需加载）
+    PreloadGateScreen.tsx     进场前资源预加载门控
     TeamLogos.tsx             战队与赛事 Logo（矢量）
   data/
     broadcastSlots.ts         宣传片与数据前瞻的排期、资源路径
     finalsData.ts             选手画廊与轮播图数据
   utils/
-    broadcastLogic.ts         倒计时、排期队列与转场逻辑
+    broadcastLogic.ts         倒计时、排期队列、转场与弹幕布局算法
 server.ts                     Express + WebSocket（弹幕实时广播）
 public/assets/                所有图片、视频、音频素材
 ```
@@ -44,7 +49,25 @@ public/assets/                所有图片、视频、音频素材
 1. 全部宣传片重新封装为 `+faststart`（`moov` 前置），开播只需开头几百 KB。
 2. **不重新编码**，码率保持原始的 2.2~3.0 Mbps，画质与原片完全一致。
 3. 前端改为分级加载：只预热当前这一支，播起来后才让下一支开始缓冲，不再一起抢带宽。
-4. 增加缓冲门控与卡顿自愈：连续 6 秒画面不推进就重新拉流，20 秒仍无进展则自动跳过，不会卡死整个导播流程。
+4. 增加缓冲门控与卡顿自愈：连续 6.4 秒画面不推进就重新拉流，16 秒仍无进展则自动跳过，不会卡死整个导播流程。
+
+### 另一个坑：硬件解码器被抢光（画面卡在某几秒不动）
+
+现象：宣传片播到某个位置突然停住，`readyState` 从 4 掉到 2，但 `buffered` 明明还有十几秒、
+`error` 为 null、`paused` 仍是 false。手动拖一下进度条立刻恢复。
+
+根因不是网络也不是文件：页面里十几个 `<video>` 同时挂载，Chromium 的硬件解码器
+（`D3D11VideoDecoder`）数量有限，当前视频的媒体管线会被反复挂起（CDP 里能看到
+`kPipelineStateChange: kSuspended`）。用 `--disable-accelerated-video-decode` 启动可以 100% 复现不出来。
+
+已做四层处理，改动这块代码时不要破坏：
+
+| 措施 | 位置 |
+| --- | --- |
+| 只给「当前 + 下一支」挂 `src`，其余元素不加载 | `BroadcastStage.tsx` 的 `shouldAttachSrc` |
+| 全屏遮罩期间卸掉背景循环视频的 `src`（暂停不够，仍占解码器） | `bgLoopVideoRef` 的 effect |
+| 只有当前播放的支允许出声，其余全部 `muted` | `<video muted={...}>` |
+| 看门狗 800ms 一次；缓冲充足却不动时 `currentTime += 0.06` 微调重建解码管线（2.4 秒内自愈） | `watchdog` |
 
 替换宣传片的正确做法（只重封装 + 切分，不降画质）：
 
@@ -70,7 +93,7 @@ python scripts/split-promos.py
 | 内容 | 触发时间 | 时长 |
 | --- | --- | --- |
 | 宣传片（开幕式预告 → 片头 → 正片1 → 正片2 → 正片3 八强之争，支间 1.8s 黑屏） | 每 **45 分钟** | 约 12 分 30 秒 |
-| 赛事前瞻（7 张 1080p 图例） | 每 **15 分钟** | 每张 20 秒 |
+| 赛事前瞻（8 张 1080p 图例） | 每 **15 分钟** | 每张 20 秒 |
 
 ## 部署（GitHub Pages）
 

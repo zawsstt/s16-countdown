@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Send,
   ThumbsUp,
@@ -9,9 +9,17 @@ import {
   ChevronUp,
   ChevronDown,
   Sparkles,
+  ShieldCheck,
+  Cpu,
 } from 'lucide-react';
 import type { DanmakuMessage } from '../../server';
-import { validateDanmakuInput } from '../utils/broadcastLogic';
+import {
+  validateDanmakuInput,
+  computeVirtualizedDanmakuWindow,
+  computeAntiOverlapDanmakuLayout,
+  DANMAKU_MAX_CONCURRENT_DOM,
+  DANMAKU_LANE_COUNT,
+} from '../utils/broadcastLogic';
 import { QUICK_DANMAKU_PRESETS } from '../data/finalsData';
 
 interface DanmakuPluginProps {
@@ -39,6 +47,10 @@ const COLOR_OPTIONS = [
   { label: '峡谷翠绿', value: '#34d399' },
 ];
 
+/** 虚拟化列表单行固定高度（px）与可视容器高度（px） */
+const VIRTUAL_ROW_HEIGHT_PX = 46;
+const VIRTUAL_VIEWPORT_HEIGHT_PX = 184;
+
 export const DanmakuPlugin: React.FC<DanmakuPluginProps> = ({
   danmakuList,
   onlineCount,
@@ -57,6 +69,7 @@ export const DanmakuPlugin: React.FC<DanmakuPluginProps> = ({
   const [color, setColor] = useState('#00d2ff');
   const [teamFilter, setTeamFilter] = useState<'ALL' | 'GEN' | 'BLG'>('ALL');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
 
   const handleTeamChange = (newTeam: 'GEN' | 'BLG' | 'NEUTRAL') => {
     setTeam(newTeam);
@@ -82,10 +95,57 @@ export const DanmakuPlugin: React.FC<DanmakuPluginProps> = ({
     setText('');
   };
 
-  const filteredList = danmakuList.filter((item) => {
-    if (teamFilter === 'ALL') return true;
-    return item.team === teamFilter;
-  });
+  // 按阵营过滤并倒序排列（最新在最上面）
+  const reversedFilteredList = useMemo(() => {
+    return danmakuList
+      .filter((item) => {
+        if (teamFilter === 'ALL') return true;
+        return item.team === teamFilter;
+      })
+      .slice()
+      .reverse();
+  }, [danmakuList, teamFilter]);
+
+  // 虚拟化窗口计算：高峰期即使有上百条历史弹幕，DOM 中也仅挂载可视区 + 缓冲行（约 10~12 个节点）
+  const virtualWindow = useMemo(
+    () =>
+      computeVirtualizedDanmakuWindow(
+        reversedFilteredList.length,
+        scrollTop,
+        VIRTUAL_VIEWPORT_HEIGHT_PX,
+        VIRTUAL_ROW_HEIGHT_PX,
+        3
+      ),
+    [reversedFilteredList.length, scrollTop]
+  );
+
+  const visibleRows = useMemo(
+    () =>
+      reversedFilteredList.slice(virtualWindow.startIndex, virtualWindow.endIndex),
+    [reversedFilteredList, virtualWindow.startIndex, virtualWindow.endIndex]
+  );
+
+  // 实时计算大屏同轨道防重叠与 DOM 节流指标，便于导播实时监控
+  const antiOverlapMetrics = useMemo(() => {
+    const scheduled = computeAntiOverlapDanmakuLayout(
+      danmakuList,
+      Date.now(),
+      DANMAKU_MAX_CONCURRENT_DOM,
+      DANMAKU_LANE_COUNT
+    );
+    const maxDensity = scheduled.reduce((acc, s) => Math.max(acc, s.laneDensity), 0);
+    const avgInterval =
+      scheduled.length > 0
+        ? (
+            scheduled.reduce((acc, s) => acc + s.intervalSec, 0) / scheduled.length
+          ).toFixed(1)
+        : '2.4';
+    return {
+      activeDomCount: scheduled.length,
+      maxDensity,
+      avgInterval,
+    };
+  }, [danmakuList]);
 
   return (
     <div
@@ -94,11 +154,11 @@ export const DanmakuPlugin: React.FC<DanmakuPluginProps> = ({
       className="relative z-40 w-full md:w-auto pointer-events-auto"
     >
       {/* =====================================================================
-          POPOVER DRAWER: EXPANDED REAL-TIME DANMAKU FEED & PRESETS
+          POPOVER DRAWER: EXPANDED REAL-TIME DANMAKU FEED & VIRTUALIZED LIST
          ===================================================================== */}
       {isDrawerOpen && (
-        <div className="mb-2 w-full md:w-[460px] rounded-xl border border-[#0051ff]/50 bg-[#03081c]/95 backdrop-blur-xl p-3.5 shadow-[0_16px_60px_rgba(0,0,0,0.9)] animate-fadeIn">
-          {/* Drawer Header: Live Connection + Support Tug-of-War */}
+        <div className="mb-2 md:mb-0 md:absolute md:bottom-12 md:right-0 z-50 w-full md:w-[460px] rounded-xl border border-[#0051ff]/50 bg-[#03081c]/95 backdrop-blur-xl p-3.5 shadow-[0_16px_60px_rgba(0,0,0,0.9)] animate-fadeIn">
+          {/* Drawer Header: Live Connection + Opacity Control */}
           <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-white/10">
             <div className="flex items-center gap-2 text-xs">
               <span
@@ -126,6 +186,25 @@ export const DanmakuPlugin: React.FC<DanmakuPluginProps> = ({
                 onChange={(e) => onChangeDanmakuOpacity(parseFloat(e.target.value))}
                 className="w-16 accent-[#00d2ff] cursor-pointer"
               />
+            </div>
+          </div>
+
+          {/* Anti-Overlap & Virtualization Engine Status Bar */}
+          <div
+            data-testid="danmaku-engine-status"
+            className="mt-2 mb-2.5 flex flex-wrap items-center justify-between gap-1.5 rounded-lg bg-[#010722] border border-[#00d2ff]/25 px-2.5 py-1.5 text-[11px] text-slate-300"
+          >
+            <div className="inline-flex items-center gap-1 text-[#00d2ff] font-semibold">
+              <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+              <span>
+                防重叠间隔: <strong className="font-mono text-white">{antiOverlapMetrics.avgInterval}s</strong> (峰值密度 {antiOverlapMetrics.maxDensity}/轨)
+              </span>
+            </div>
+            <div className="inline-flex items-center gap-1 text-emerald-300 font-semibold">
+              <Cpu className="w-3.5 h-3.5 shrink-0" />
+              <span>
+                虚拟化 DOM: <strong className="font-mono text-white">{antiOverlapMetrics.activeDomCount}/{DANMAKU_MAX_CONCURRENT_DOM}</strong>
+              </span>
             </div>
           </div>
 
@@ -173,7 +252,10 @@ export const DanmakuPlugin: React.FC<DanmakuPluginProps> = ({
                 <button
                   key={tab}
                   type="button"
-                  onClick={() => setTeamFilter(tab)}
+                  onClick={() => {
+                    setTeamFilter(tab);
+                    setScrollTop(0);
+                  }}
                   className={`px-2.5 py-0.5 text-[11px] font-bold rounded transition-colors cursor-pointer ${
                     teamFilter === tab
                       ? 'bg-[#0051ff] text-white'
@@ -188,22 +270,33 @@ export const DanmakuPlugin: React.FC<DanmakuPluginProps> = ({
                 </button>
               ))}
             </div>
+            <span className="text-[10px] text-slate-400 font-mono">
+              渲染节点: {visibleRows.length}/{reversedFilteredList.length}
+            </span>
           </div>
 
-          {/* Scrollable Live Danmaku List */}
+          {/* Virtualized Scrollable Live Danmaku List */}
           <div
             data-testid="danmaku-feed-list"
-            className="h-44 overflow-y-auto rounded-lg border border-white/10 bg-[#010412] p-2 space-y-1.5"
+            onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+            style={{ height: `${VIRTUAL_VIEWPORT_HEIGHT_PX}px` }}
+            className="overflow-y-auto rounded-lg border border-white/10 bg-[#010412] p-2"
           >
-            {filteredList
-              .slice()
-              .reverse()
-              .map((item) => (
+            <div
+              style={{
+                paddingTop: `${virtualWindow.topSpacerPx}px`,
+                paddingBottom: `${virtualWindow.bottomSpacerPx}px`,
+              }}
+              className="space-y-1.5"
+            >
+              {visibleRows.map((item) => (
                 <div
                   key={item.id}
-                  className="flex items-start justify-between gap-2 rounded bg-slate-900/70 px-2.5 py-1.5 border border-white/5 text-xs"
+                  data-testid="danmaku-virtual-row"
+                  style={{ minHeight: `${VIRTUAL_ROW_HEIGHT_PX - 6}px` }}
+                  className="flex items-center justify-between gap-2 rounded bg-slate-900/70 px-2.5 py-1.5 border border-white/5 text-xs"
                 >
-                  <div className="min-w-0 flex-1">
+                  <div className="min-w-0 flex-1 truncate">
                     <span
                       className={`font-bold mr-1.5 ${
                         item.team === 'GEN'
@@ -215,7 +308,7 @@ export const DanmakuPlugin: React.FC<DanmakuPluginProps> = ({
                     >
                       [{item.team === 'NEUTRAL' ? '观赛' : item.team}] {item.author}:
                     </span>
-                    <span style={{ color: item.color }} className="font-medium break-words">
+                    <span style={{ color: item.color }} className="font-medium">
                       {item.text}
                     </span>
                   </div>
@@ -230,6 +323,7 @@ export const DanmakuPlugin: React.FC<DanmakuPluginProps> = ({
                   </button>
                 </div>
               ))}
+            </div>
           </div>
 
           {/* Quick One-Click Presets */}
@@ -339,6 +433,7 @@ export const DanmakuPlugin: React.FC<DanmakuPluginProps> = ({
         {/* Expand / Collapse Full Danmaku Interactive Drawer */}
         <button
           type="button"
+          data-testid="toggle-danmaku-drawer-btn"
           onClick={() => setIsDrawerOpen((prev) => !prev)}
           className="inline-flex items-center gap-1 rounded-lg bg-white/10 hover:bg-white/20 border border-white/15 px-2.5 py-1 text-xs font-semibold text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
         >

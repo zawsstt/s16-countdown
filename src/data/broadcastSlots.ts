@@ -216,8 +216,8 @@ export const PROMO_GROUP_IDS: string[] = Array.from(
 );
 
 /**
- * 赛事数据前瞻倒计时播报列表（每 15 分钟 :00 / :15 / :30 / :45 自动触发）
- * 填充用户上传的 7 张官方 1080p 赛事数据图例（____1 ~ ____7）
+ * 赛事前瞻倒计时播报列表（每 15 分钟自动触发）
+ * 填充用户上传的 8 张官方 1080p 赛事数据图例（____1 ~ ____8）
  */
 export const MATCH_DATA_PREVIEW_SLOT: MatchDataPreviewSlotItem[] = [
   {
@@ -268,5 +268,12 @@ export const MATCH_DATA_PREVIEW_SLOT: MatchDataPreviewSlotItem[] = [
     subtitle: 'CHOVY & CANYON 2019–2026 连续八届全球总决赛战绩一览',
     tag: 'CAREER MILESTONE',
     graphicImageUrl: 'assets/aistudio/____7_af56e80b.png',
+  },
+  {
+    id: 'data-preview-8-blg-vs-lck-bo5',
+    title: '26 BLG VS LCK IN BO5 · BLG在BO5中面对LCK队伍',
+    subtitle: '2026 全球总决赛八强 3:0 DK · 四强 3:1 T1 · 决赛 VS GEN 待交手',
+    tag: 'BLG VS LCK IN BO5',
+    graphicImageUrl: 'assets/aistudio/____8_blg_vs_lck_bo5.png',
   },
 ];
