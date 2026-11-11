@@ -35,6 +35,8 @@ import type { DanmakuMessage } from '../../server';
 
 interface BroadcastStageProps {
   countdown: CountdownFormatted;
+  /** 每小时整点全屏影片是否正在播放：为 true 时释放本页所有视频，避免抢硬件解码器 */
+  isHourlyVideoActive?: boolean;
   promoCountdown: SlotCountdownState;
   dataPreviewCountdown: SlotCountdownState;
   slotQueue: BroadcastSlotQueueState;
@@ -66,6 +68,7 @@ const REAL_PARTNER_BADGES = [
 
 export const BroadcastStage: React.FC<BroadcastStageProps> = ({
   countdown,
+  isHourlyVideoActive = false,
   promoCountdown,
   dataPreviewCountdown,
   slotQueue,
@@ -861,7 +864,7 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
              会和宣传片抢硬件解码资源（表现为宣传片卡在某几秒不动）。
              卸掉后浏览器会真正释放解码器，回到主页再重新拉流（文件仅 1MB 级）。 */
           src={
-            isShowingPromoOverlay || isShowingDataOverlay
+            isShowingPromoOverlay || isShowingDataOverlay || isHourlyVideoActive
               ? undefined
               : 'assets/broadcast/gen_vs_blg_loop.mp4'
           }
@@ -1059,7 +1062,9 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
              readyState 从 4 掉到 2、缓冲明明还在却不再推进。
              只保留 2 个加载窗口后，解码器够用，播放稳定。
              未加载的元素仍显示 poster 首帧，切过去时再拉流。 */
-          const shouldAttachSrc = idx === promoItemIndex || idx === promoItemIndex + 1;
+          const shouldAttachSrc =
+            !isHourlyVideoActive &&
+            (idx === promoItemIndex || idx === promoItemIndex + 1);
           return (
             <video
               key={item.id}
@@ -1320,7 +1325,8 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
       >
         <video
           ref={stingerVideoRef}
-          src={TRANSITION_STINGER_SLOT.stingerVideoUrl}
+          /* 全屏影片播放期间释放转场视频，把解码器让给它 */
+          src={isHourlyVideoActive ? undefined : TRANSITION_STINGER_SLOT.stingerVideoUrl}
           preload="auto"
           muted
           playsInline

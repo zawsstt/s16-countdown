@@ -67,6 +67,15 @@ export const BROADCAST_SLIDES: BroadcastSlide[] = [
     photographerOrSource: 'WORLDS 2026 BROADCAST',
   },
   {
+    id: 'carousel-upload-6-this-is-our-moment',
+    title: 'THIS IS OUR MOMENT · 2026 全球总决赛官方主视觉',
+    subtitle: 'Worlds 2026 官方海报 · 决赛城市夜景与英雄剪影',
+    category: 'EVENT',
+    imageUrl: 'assets/aistudio/this_is_our_moment_2026.jpg',
+    badgeText: 'THIS IS OUR MOMENT',
+    photographerOrSource: 'WORLDS 2026 OFFICIAL FEED',
+  },
+  {
     id: 'carousel-upload-5-blg-xun-walkout',
     title: 'BLG Xun 登场通道与现场粉丝击掌互动',
     subtitle: 'LPL #2 · BILIBILI GAMING 打野 Xun 满怀自信迈向主舞台',

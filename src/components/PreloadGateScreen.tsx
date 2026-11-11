@@ -1,5 +1,16 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { ShieldCheck, Sparkles, Loader2, Play, Film, Image as ImageIcon, Music, Layers } from 'lucide-react';
+import {
+  ShieldCheck,
+  Sparkles,
+  Loader2,
+  Play,
+  Film,
+  Image as ImageIcon,
+  Music,
+  Layers,
+  Volume2,
+  VolumeX,
+} from 'lucide-react';
 import { BROADCAST_SLIDES } from '../data/finalsData';
 import {
   MATCH_DATA_PREVIEW_SLOT,
@@ -12,6 +23,8 @@ import { WorldsCrestLogo } from './TeamLogos';
 
 interface PreloadGateScreenProps {
   onReady: () => void;
+  audioEnabled: boolean;
+  onToggleAudio: () => void;
 }
 
 interface PreloadTaskItem {
@@ -85,7 +98,11 @@ function prewarmMediaHeadBytes(url: string, byteLimit = 1048575, timeoutMs = 240
   });
 }
 
-export const PreloadGateScreen: React.FC<PreloadGateScreenProps> = ({ onReady }) => {
+export const PreloadGateScreen: React.FC<PreloadGateScreenProps> = ({
+  onReady,
+  audioEnabled,
+  onToggleAudio,
+}) => {
   const [progress, setProgress] = useState(0);
   const [completedCount, setCompletedCount] = useState(0);
   const [totalCount, setTotalCount] = useState(1);
@@ -98,7 +115,14 @@ export const PreloadGateScreen: React.FC<PreloadGateScreenProps> = ({ onReady })
     audio: false,
   });
   const [isExiting, setIsExiting] = useState(false);
+  const [isAudioBtnPulsing, setIsAudioBtnPulsing] = useState(false);
   const completedRef = useRef(false);
+
+  const handleAudioToggleClick = () => {
+    setIsAudioBtnPulsing(true);
+    onToggleAudio();
+    setTimeout(() => setIsAudioBtnPulsing(false), 450);
+  };
 
   const finishPreload = () => {
     if (completedRef.current) return;
@@ -359,16 +383,44 @@ export const PreloadGateScreen: React.FC<PreloadGateScreenProps> = ({ onReady })
 
       {/* Bottom Action Bar */}
       <div className="relative z-10 w-full max-w-4xl flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-white/10 text-xs text-slate-400">
-        <span>提示：预加载完成后将自动进入 S16 冠亚军决赛实时导播画面</span>
-        <button
-          type="button"
-          data-testid="enter-stage-now-btn"
-          onClick={finishPreload}
-          className="inline-flex items-center gap-1.5 rounded-xl bg-[#0051ff] hover:bg-[#0066ff] border border-[#00d2ff]/50 px-4 py-2 text-xs font-extrabold text-white shadow-[0_0_20px_rgba(0,81,255,0.5)] transition-all cursor-pointer"
-        >
-          <Play className="w-3.5 h-3.5 fill-current" />
-          <span>立即进入导播台 ({progress}%)</span>
-        </button>
+        <span>提示：预加载完成后将自动进入 S16 冠亚军决赛实时导播画面（可随时预设进场声音状态）</span>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            data-testid="preload-audio-toggle-btn"
+            onClick={handleAudioToggleClick}
+            aria-pressed={audioEnabled}
+            className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-extrabold transition-all cursor-pointer ${
+              isAudioBtnPulsing ? 'animate-control-pulse' : ''
+            } ${
+              audioEnabled
+                ? 'bg-[#001861]/90 hover:bg-[#002b99] border-[#00d2ff]/55 text-[#00d2ff] shadow-[0_0_14px_rgba(0,210,255,0.28)]'
+                : 'bg-slate-900/90 hover:bg-slate-800 border-rose-500/45 text-rose-300'
+            }`}
+          >
+            {audioEnabled ? (
+              <>
+                <Volume2 className="w-3.5 h-3.5 text-[#00d2ff] shrink-0" />
+                <span>进场声音：已开启</span>
+              </>
+            ) : (
+              <>
+                <VolumeX className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                <span>进场静音：已关闭</span>
+              </>
+            )}
+          </button>
+
+          <button
+            type="button"
+            data-testid="enter-stage-now-btn"
+            onClick={finishPreload}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-[#0051ff] hover:bg-[#0066ff] border border-[#00d2ff]/50 px-4 py-2 text-xs font-extrabold text-white shadow-[0_0_20px_rgba(0,81,255,0.5)] transition-all cursor-pointer"
+          >
+            <Play className="w-3.5 h-3.5 fill-current" />
+            <span>立即进入导播台 ({progress}%)</span>
+          </button>
+        </div>
       </div>
     </div>
   );

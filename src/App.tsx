@@ -18,6 +18,7 @@ const PreMatchStatsPanel = lazy(() =>
   import('./components/PreMatchStatsPanel').then((m) => ({ default: m.PreMatchStatsPanel }))
 );
 import { PreloadGateScreen } from './components/PreloadGateScreen';
+import { HourlyVideoOverlay } from './components/HourlyVideoOverlay';
 import { BROADCAST_SLIDES } from './data/finalsData';
 import {
   calculateFinalsCountdown,
@@ -64,6 +65,22 @@ export default function App() {
   // 导播控制台「赛前数据统计」Recharts 面板开关
   const [isPreMatchStatsOpen, setIsPreMatchStatsOpen] = useState<boolean>(false);
 
+  // 每小时整点全屏播放「选人阶段加长版」（?hourly=1 可手动触发，便于调试）
+  const [isHourlyVideoOpen, setIsHourlyVideoOpen] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return new URLSearchParams(window.location.search).get('hourly') === '1';
+    }
+    return false;
+  });
+
+  /** 下一次整点的时间戳 */
+  const [nextHourlyAt, setNextHourlyAt] = useState<number>(() => {
+    const d = new Date();
+    d.setMinutes(0, 0, 0);
+    d.setHours(d.getHours() + 1);
+    return d.getTime();
+  });
+
   // Real-time timestamp for Beijing Time Sunday Nov 15, 2026 03:00 AM Finals countdown
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   // Align periodic slot clock to start at a 3-minute (03:00 = 180s) countdown on page load/refresh
@@ -89,17 +106,73 @@ export default function App() {
   // 背景音乐：顺序循环播放（进入赛事数据前瞻时强制随机换一首）
   // ==========================================================================
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const mediaSourceAttachedRef = useRef<boolean>(false);
+
   const [trackIndex, setTrackIndex] = useState(0);
   const [isBgmPlaying, setIsBgmPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(0.65);
+  const [bgmProgressPercent, setBgmProgressPercent] = useState(0);
+  const [isBgmBtnPulsing, setIsBgmBtnPulsing] = useState(false);
+  const [isVolumeBtnPulsing, setIsVolumeBtnPulsing] = useState(false);
+  const [waveformBars, setWaveformBars] = useState<number[]>([0.24, 0.32, 0.28, 0.34, 0.24]);
 
   const trackIndexRef = useRef(0);
   const wantsPlayRef = useRef(true);
+  const isMutedRef = useRef(false);
   const slotQueueRef = useRef<BroadcastSlotId | null>(slotQueue.activeSlot);
   const prevSlotRef = useRef<BroadcastSlotId | null>(slotQueue.activeSlot);
 
   const currentTrack = BGM_PLAYLIST[trackIndex] || BGM_PLAYLIST[0];
+
+  const triggerBgmPulse = useCallback(() => {
+    setIsBgmBtnPulsing(true);
+    setTimeout(() => setIsBgmBtnPulsing(false), 450);
+  }, []);
+
+  const triggerVolumePulse = useCallback(() => {
+    setIsVolumeBtnPulsing(true);
+    setTimeout(() => setIsVolumeBtnPulsing(false), 450);
+  }, []);
+
+  /** 初始化并连接 Web Audio API AnalyserNode 到 <audio> 元素 */
+  const ensureAudioAnalyser = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio || typeof window === 'undefined') return;
+    try {
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtx) return;
+
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new AudioCtx();
+      }
+      const ctx = audioCtxRef.current;
+
+      if (!analyserRef.current) {
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 64;
+        analyser.smoothingTimeConstant = 0.72;
+        analyserRef.current = analyser;
+      }
+
+      if (!mediaSourceAttachedRef.current && analyserRef.current) {
+        const source = ctx.createMediaElementSource(audio);
+        source.connect(analyserRef.current);
+        analyserRef.current.connect(ctx.destination);
+        mediaSourceAttachedRef.current = true;
+      }
+
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+      }
+    } catch {
+      // Ignore if browser blocks AudioContext creation prior to gesture
+    }
+  }, []);
 
   /** 切换到指定曲目并（在允许时）自动播放 */
   const loadTrack = useCallback((index: number, autoPlay: boolean) => {
@@ -111,6 +184,7 @@ export default function App() {
         : 0;
     trackIndexRef.current = safeIndex;
     setTrackIndex(safeIndex);
+    setBgmProgressPercent(0);
     audio.src = BGM_PLAYLIST[safeIndex].url;
     try {
       audio.load();
@@ -230,7 +304,7 @@ export default function App() {
     return () => clearInterval(timer);
   }, [isAutoPlayingSlides]);
 
-  // 音乐播放器初始化：首曲、播完自动下一首、首次交互解锁自动播放
+  // 音乐播放器初始化：首曲、播完自动下一首、进度同步、首次交互解锁自动播放
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -244,18 +318,37 @@ export default function App() {
     };
     audio.addEventListener('ended', handleEnded);
 
-    const syncPlayState = () => setIsBgmPlaying(!audio.paused);
+    const syncPlayState = () => {
+      const playing = !audio.paused;
+      setIsBgmPlaying(playing);
+      if (playing) {
+        ensureAudioAnalyser();
+      }
+    };
     audio.addEventListener('play', syncPlayState);
     audio.addEventListener('pause', syncPlayState);
+
+    const syncProgress = () => {
+      if (!audio.duration || !Number.isFinite(audio.duration) || audio.duration <= 0) {
+        setBgmProgressPercent(0);
+        return;
+      }
+      const pct = Math.min(100, Math.max(0, (audio.currentTime / audio.duration) * 100));
+      setBgmProgressPercent(pct);
+    };
+    audio.addEventListener('timeupdate', syncProgress);
+    audio.addEventListener('loadedmetadata', syncProgress);
 
     const unlockOnGesture = () => {
       window.removeEventListener('pointerdown', unlockOnGesture);
       setTimeout(() => {
+        ensureAudioAnalyser();
         const current = audioRef.current;
         if (
           current &&
           current.paused &&
           wantsPlayRef.current &&
+          !isMutedRef.current &&
           slotQueueRef.current !== 'promo_video'
         ) {
           current.play().catch(() => {});
@@ -268,16 +361,66 @@ export default function App() {
       audio.removeEventListener('ended', handleEnded);
       audio.removeEventListener('play', syncPlayState);
       audio.removeEventListener('pause', syncPlayState);
+      audio.removeEventListener('timeupdate', syncProgress);
+      audio.removeEventListener('loadedmetadata', syncProgress);
       window.removeEventListener('pointerdown', unlockOnGesture);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Web Audio API 实时频谱采样循环（驱动 BGM 按钮内的 5 柱动态声波可视化）
+  useEffect(() => {
+    const active = isBgmPlaying && !isMuted && slotQueue.activeSlot !== 'promo_video';
+    if (!active) {
+      setWaveformBars([0.22, 0.3, 0.25, 0.32, 0.22]);
+      return;
+    }
+
+    ensureAudioAnalyser();
+    let rafId = 0;
+    const freqData = new Uint8Array(32);
+    const bandIndices = [1, 3, 6, 10, 15];
+
+    const updateWaveform = (timestamp: number) => {
+      const analyser = analyserRef.current;
+      let hasSignal = false;
+      const nextBars: number[] = [];
+
+      if (analyser) {
+        analyser.getByteFrequencyData(freqData);
+        for (let i = 0; i < bandIndices.length; i++) {
+          const val = freqData[bandIndices[i]] || 0;
+          if (val > 4) hasSignal = true;
+          nextBars.push(Math.min(1, Math.max(0.2, val / 235)));
+        }
+      }
+
+      if (!hasSignal) {
+        // 当 AudioContext 处于恢复过渡期时使用平滑谐波包络兜底，确保播放态声波始终灵动跳动
+        const t = timestamp * 0.008;
+        for (let i = 0; i < 5; i++) {
+          const wave =
+            0.52 +
+            0.32 * Math.sin(t + i * 1.15) +
+            0.14 * Math.cos(t * 1.7 - i * 0.8);
+          nextBars.push(Math.min(1, Math.max(0.2, wave)));
+        }
+      }
+
+      setWaveformBars(nextBars);
+      rafId = requestAnimationFrame(updateWaveform);
+    };
+
+    rafId = requestAnimationFrame(updateWaveform);
+    return () => cancelAnimationFrame(rafId);
+  }, [isBgmPlaying, isMuted, slotQueue.activeSlot, ensureAudioAnalyser]);
 
   // 音量 / 静音同步
   useEffect(() => {
     if (audioRef.current) audioRef.current.volume = volume;
   }, [volume]);
   useEffect(() => {
+    isMutedRef.current = isMuted;
     if (audioRef.current) audioRef.current.muted = isMuted;
   }, [isMuted]);
 
@@ -301,23 +444,34 @@ export default function App() {
 
     if (slot === 'data_preview') {
       const nextIndex = getRandomDifferentTrackIndex(trackIndexRef.current);
-      wantsPlayRef.current = true;
-      loadTrack(nextIndex, true);
+      if (!isMutedRef.current) {
+        wantsPlayRef.current = true;
+      }
+      loadTrack(nextIndex, wantsPlayRef.current && !isMutedRef.current);
       return;
     }
 
     if (prev === 'promo_video' || prev === 'data_preview') {
       const nextIndex = getRandomDifferentTrackIndex(trackIndexRef.current);
-      wantsPlayRef.current = true;
-      loadTrack(nextIndex, true);
+      if (!isMutedRef.current) {
+        wantsPlayRef.current = true;
+      }
+      loadTrack(nextIndex, wantsPlayRef.current && !isMutedRef.current);
     }
   }, [slotQueue.activeSlot, loadTrack]);
 
-  const toggleBgmPlay = () => {
+  const toggleBgmPlay = useCallback(() => {
+    triggerBgmPulse();
+    ensureAudioAnalyser();
     const audio = audioRef.current;
     if (!audio) return;
     if (audio.paused) {
       wantsPlayRef.current = true;
+      if (isMutedRef.current) {
+        setIsMuted(false);
+        isMutedRef.current = false;
+        audio.muted = false;
+      }
       audio
         .play()
         .then(() => setIsBgmPlaying(true))
@@ -327,19 +481,93 @@ export default function App() {
       audio.pause();
       setIsBgmPlaying(false);
     }
-  };
+  }, [triggerBgmPulse, ensureAudioAnalyser]);
 
-  const handleNextTrack = () => {
+  const handleNextTrack = useCallback(() => {
+    triggerBgmPulse();
+    ensureAudioAnalyser();
     const nextIndex = getNextTrackIndex(trackIndexRef.current);
     wantsPlayRef.current = true;
-    loadTrack(nextIndex, true);
-  };
+    loadTrack(nextIndex, !isMutedRef.current);
+  }, [triggerBgmPulse, ensureAudioAnalyser, loadTrack]);
 
-  const toggleMute = () => {
-    const nextMuted = !isMuted;
+  const toggleMute = useCallback(() => {
+    triggerVolumePulse();
+    ensureAudioAnalyser();
+    const nextMuted = !isMutedRef.current;
     setIsMuted(nextMuted);
-    if (audioRef.current) audioRef.current.muted = nextMuted;
-  };
+    isMutedRef.current = nextMuted;
+    if (audioRef.current) {
+      audioRef.current.muted = nextMuted;
+      if (
+        !nextMuted &&
+        audioRef.current.paused &&
+        wantsPlayRef.current &&
+        slotQueueRef.current !== 'promo_video'
+      ) {
+        audioRef.current.play().catch(() => {});
+      }
+    }
+  }, [triggerVolumePulse, ensureAudioAnalyser]);
+
+  /** 全局快捷键监听：Space 播放/暂停音乐，M 静音/取消静音，H 隐藏/显示底部导播栏 */
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (
+          tag === 'TEXTAREA' ||
+          tag === 'SELECT' ||
+          target.isContentEditable ||
+          (tag === 'INPUT' && (target as HTMLInputElement).type !== 'range')
+        ) {
+          return;
+        }
+      }
+
+      if (e.code === 'Space' || e.key === ' ') {
+        e.preventDefault();
+        toggleBgmPlay();
+      } else if (e.key === 'm' || e.key === 'M') {
+        e.preventDefault();
+        toggleMute();
+      } else if (e.key === 'h' || e.key === 'H') {
+        e.preventDefault();
+        setIsHudMinimized((prev) => !prev);
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [toggleBgmPlay, toggleMute]);
+
+  /** 进场前 PreloadGateScreen 专用：一键切换进场音频播放/静音 */
+  const handlePreloadAudioToggle = useCallback(() => {
+    triggerVolumePulse();
+    triggerBgmPulse();
+    ensureAudioAnalyser();
+    const nextMuted = !isMutedRef.current;
+    setIsMuted(nextMuted);
+    isMutedRef.current = nextMuted;
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.muted = nextMuted;
+    if (nextMuted) {
+      wantsPlayRef.current = false;
+      if (!audio.paused) audio.pause();
+      setIsBgmPlaying(false);
+    } else {
+      wantsPlayRef.current = true;
+      if (slotQueueRef.current !== 'promo_video') {
+        audio
+          .play()
+          .then(() => setIsBgmPlaying(true))
+          .catch(() => {});
+      }
+    }
+  }, [triggerBgmPulse, triggerVolumePulse, ensureAudioAnalyser]);
 
   const handleVolumeChange = (newVol: number) => {
     setVolume(newVol);
@@ -347,6 +575,8 @@ export default function App() {
     if (newVol > 0 && isMuted) {
       if (audioRef.current) audioRef.current.muted = false;
       setIsMuted(false);
+      isMutedRef.current = false;
+      triggerVolumePulse();
     }
   };
 
@@ -561,6 +791,39 @@ export default function App() {
     setSlotQueue({ activeSlot: null, pendingSlots: [] });
   }, []);
 
+  // 到点自动弹出全屏影片；播完/退出后重新计算下一个整点
+  useEffect(() => {
+    const delay = nextHourlyAt - Date.now();
+    if (delay <= 0) {
+      const d = new Date();
+      d.setMinutes(0, 0, 0);
+      d.setHours(d.getHours() + 1);
+      setNextHourlyAt(d.getTime());
+      return;
+    }
+    const timer = setTimeout(() => {
+      setIsHourlyVideoOpen(true);
+      const d = new Date();
+      d.setMinutes(0, 0, 0);
+      d.setHours(d.getHours() + 1);
+      setNextHourlyAt(d.getTime());
+    }, delay);
+    return () => clearTimeout(timer);
+  }, [nextHourlyAt]);
+
+  // 全屏影片期间让位给影片原声：暂停战歌，关闭后恢复
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (isHourlyVideoOpen) {
+      wantsPlayRef.current = false;
+      if (!audio.paused) audio.pause();
+    } else if (slotQueueRef.current !== 'promo_video' && !isMutedRef.current) {
+      wantsPlayRef.current = true;
+      audio.play().catch(() => {});
+    }
+  }, [isHourlyVideoOpen]);
+
   const isBgmActive = isBgmPlaying && slotQueue.activeSlot !== 'promo_video';
 
   const slotNowMs = nowMs + slotClockOffsetMs;
@@ -575,33 +838,53 @@ export default function App() {
     >
       {/* 游戏式进场前资源预加载门控界面 */}
       {!isPreloadComplete && (
-        <PreloadGateScreen onReady={() => setIsPreloadComplete(true)} />
+        <PreloadGateScreen
+          onReady={() => setIsPreloadComplete(true)}
+          audioEnabled={!isMuted}
+          onToggleAudio={handlePreloadAudioToggle}
+        />
       )}
 
       {/* 单一音频元素：战歌顺序循环 */}
       <audio ref={audioRef} preload="auto" />
 
+      {/* 每小时整点全屏播放的选人阶段加长版（左上角保留决赛倒计时，右上角可退出） */}
+      <HourlyVideoOverlay
+        isOpen={isHourlyVideoOpen}
+        onClose={() => setIsHourlyVideoOpen(false)}
+        countdownDisplay={activeCountdown.primaryDisplay}
+      />
+
       {/* =====================================================================
           PURE 16:9 BROADCAST WAITING SCREEN (GEN vs BLG · FINALS)
+          With smooth fade-in transition upon PreloadGateScreen completion
          ===================================================================== */}
-      <BroadcastStage
-        countdown={activeCountdown}
-        promoCountdown={promoCountdown}
-        dataPreviewCountdown={dataPreviewCountdown}
-        slotQueue={slotQueue}
-        onTriggerSlot={handleTriggerSlot}
-        onTriggerCoincidentSlots={handleTriggerCoincidentSlots}
-        onCompleteActiveSlot={handleCompleteActiveSlot}
-        onCloseAllSlots={handleCloseAllSlots}
-        slides={BROADCAST_SLIDES}
-        activeSlideIndex={activeSlideIndex}
-        onSelectSlide={(idx) => setActiveSlideIndex(idx)}
-        isAutoPlayingSlides={isAutoPlayingSlides}
-        onToggleAutoPlaySlides={() => setIsAutoPlayingSlides((prev) => !prev)}
-        danmakuList={danmakuList}
-        showDanmakuOverlay={showDanmakuOverlay}
-        danmakuOpacity={danmakuOpacity}
-      />
+      <div
+        data-testid="broadcast-stage-fade-wrapper"
+        className={`w-full flex flex-col md:items-center md:justify-center transition-opacity duration-700 ${
+          isPreloadComplete ? 'animate-stage-fade-in opacity-100' : 'opacity-0'
+        }`}
+      >
+        <BroadcastStage
+          countdown={activeCountdown}
+          isHourlyVideoActive={isHourlyVideoOpen}
+          promoCountdown={promoCountdown}
+          dataPreviewCountdown={dataPreviewCountdown}
+          slotQueue={slotQueue}
+          onTriggerSlot={handleTriggerSlot}
+          onTriggerCoincidentSlots={handleTriggerCoincidentSlots}
+          onCompleteActiveSlot={handleCompleteActiveSlot}
+          onCloseAllSlots={handleCloseAllSlots}
+          slides={BROADCAST_SLIDES}
+          activeSlideIndex={activeSlideIndex}
+          onSelectSlide={(idx) => setActiveSlideIndex(idx)}
+          isAutoPlayingSlides={isAutoPlayingSlides}
+          onToggleAutoPlaySlides={() => setIsAutoPlayingSlides((prev) => !prev)}
+          danmakuList={danmakuList}
+          showDanmakuOverlay={showDanmakuOverlay}
+          danmakuOpacity={danmakuOpacity}
+        />
+      </div>
 
       {/* =====================================================================
           FLOATING BROADCAST DIRECTOR HUD & REAL-TIME DANMAKU PLUGIN DOCK
@@ -610,11 +893,12 @@ export default function App() {
         <button
           type="button"
           onClick={() => setIsHudMinimized(false)}
+          title="展开导播控制台与弹幕条 (快捷键: H)"
           aria-label="展开导播控制台与弹幕条"
           className="fixed bottom-3 left-3 z-40 inline-flex items-center gap-1.5 rounded-lg bg-[#03081c]/85 hover:bg-[#0051ff] border border-white/20 px-3 py-1.5 text-xs font-bold text-white backdrop-blur-md shadow-lg transition-colors cursor-pointer"
         >
           <SlidersHorizontal className="w-3.5 h-3.5 text-[#00d2ff]" />
-          <span>导播台与弹幕</span>
+          <span>导播台与弹幕 (H)</span>
         </button>
       ) : (
         <section
@@ -638,38 +922,70 @@ export default function App() {
           <div className="flex flex-col xl:flex-row items-stretch xl:items-end justify-between gap-2">
             {/* Left Pill: BGM Loop + Pre-Match Stats Toggle + Beijing Time Sunday 03:00 Finals Info */}
             <div className="pointer-events-auto flex flex-wrap lg:flex-nowrap items-center gap-1.5 rounded-xl border border-[#0051ff]/40 bg-[#03081c]/90 backdrop-blur-md px-2.5 py-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.8)]">
-              {/* BGM Play/Pause */}
+              {/* BGM Play/Pause with Toggle Pulse, Dynamic Waveform Visualizer & Bottom Track Progress Bar */}
               <button
                 type="button"
+                data-testid="bgm-toggle-btn"
                 onClick={toggleBgmPlay}
-                title={currentTrack.subtitle}
-                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all whitespace-nowrap shrink-0 cursor-pointer ${
+                title={`${currentTrack.subtitle} · 进度 ${Math.round(bgmProgressPercent)}% (快捷键: Space)`}
+                className={`relative overflow-hidden inline-flex items-center gap-1.5 px-2.5 pt-1 pb-1.5 rounded-lg text-[11px] font-bold transition-all whitespace-nowrap shrink-0 cursor-pointer ${
+                  isBgmBtnPulsing ? 'animate-control-pulse' : ''
+                } ${
                   isBgmActive
                     ? 'bg-[#00d2ff] text-slate-950 shadow-[0_0_14px_rgba(0,210,255,0.4)]'
                     : 'bg-[#0051ff] hover:bg-[#0066ff] text-white'
                 }`}
               >
                 {isBgmActive ? (
-                  <>
-                    <Pause className="w-3 h-3 shrink-0" />
-                    <span>
-                      战歌播放中 · {currentTrack.title}
-                      <span className="opacity-70 ml-1">
-                        {trackIndex + 1}/{BGM_TRACK_COUNT}
-                      </span>
-                    </span>
-                  </>
+                  <Pause className="w-3 h-3 shrink-0" />
                 ) : (
-                  <>
-                    <Play className="w-3 h-3 shrink-0" />
-                    <span>
-                      播放战歌 · {currentTrack.title}
-                      <span className="opacity-70 ml-1">
-                        {trackIndex + 1}/{BGM_TRACK_COUNT}
-                      </span>
-                    </span>
-                  </>
+                  <Play className="w-3 h-3 shrink-0" />
                 )}
+
+                {/* Web Audio API Real-Time Frequency Waveform Visualizer */}
+                <span
+                  data-testid="bgm-waveform-visualizer"
+                  aria-hidden="true"
+                  className="inline-flex items-end gap-[2px] h-3.5 px-0.5 shrink-0"
+                >
+                  {waveformBars.map((ratio, idx) => {
+                    const heightPx = Math.max(3, Math.round(ratio * 13));
+                    return (
+                      <span
+                        key={idx}
+                        style={{ height: `${heightPx}px` }}
+                        className={`w-[2.5px] rounded-full transition-[height] duration-75 ${
+                          isBgmActive && !isMuted
+                            ? 'bg-slate-950'
+                            : 'bg-white/45'
+                        }`}
+                      />
+                    );
+                  })}
+                </span>
+
+                <span>
+                  {isBgmActive ? '战歌播放中' : '播放战歌'} · {currentTrack.title}
+                  <span className="opacity-70 ml-1">
+                    {trackIndex + 1}/{BGM_TRACK_COUNT}
+                  </span>
+                </span>
+
+                {/* Bottom Track Playback Progress Bar */}
+                <span
+                  data-testid="bgm-track-progress-bar"
+                  aria-hidden="true"
+                  className="pointer-events-none absolute bottom-0 left-0 right-0 h-[3px] bg-black/35 overflow-hidden"
+                >
+                  <span
+                    style={{ width: `${bgmProgressPercent}%` }}
+                    className={`block h-full transition-[width] duration-300 ${
+                      isBgmActive
+                        ? 'bg-slate-950/85'
+                        : 'bg-gradient-to-r from-[#00d2ff] to-white'
+                    }`}
+                  />
+                </span>
               </button>
 
               {/* Next Track */}
@@ -678,17 +994,21 @@ export default function App() {
                 onClick={handleNextTrack}
                 aria-label="下一首战歌"
                 title="切到下一首战歌"
-                className="p-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-200 border border-white/10 shrink-0 cursor-pointer"
+                className="p-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-200 border border-white/10 shrink-0 cursor-pointer transition-transform active:scale-95"
               >
                 <SkipForward className="w-3.5 h-3.5" />
               </button>
 
-              {/* Mute & Volume */}
+              {/* Mute & Volume with Toggle Pulse */}
               <button
                 type="button"
+                data-testid="volume-mute-btn"
                 onClick={toggleMute}
+                title={isMuted ? '取消静音 (快捷键: M)' : '静音背景音乐 (快捷键: M)'}
                 aria-label={isMuted ? '取消静音' : '静音背景音乐'}
-                className="p-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-200 border border-white/10 shrink-0 cursor-pointer"
+                className={`p-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-200 border border-white/10 shrink-0 cursor-pointer transition-all ${
+                  isVolumeBtnPulsing ? 'animate-control-pulse border-[#00d2ff]/70' : ''
+                }`}
               >
                 {isMuted ? (
                   <VolumeX className="w-3.5 h-3.5 text-rose-400" />

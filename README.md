@@ -29,6 +29,7 @@ src/
     DanmakuPlugin.tsx         弹幕层（防重叠轨道 + DOM 虚拟化）
     PreMatchStatsPanel.tsx    赛前数据面板（Recharts，按需加载）
     PreloadGateScreen.tsx     进场前资源预加载门控
+    HourlyVideoOverlay.tsx    每小时整点全屏影片（含转场、决赛倒计时、退出按钮）
     TeamLogos.tsx             战队与赛事 Logo（矢量）
   data/
     broadcastSlots.ts         宣传片与数据前瞻的排期、资源路径
@@ -94,6 +95,7 @@ python scripts/split-promos.py
 | --- | --- | --- |
 | 宣传片（开幕式预告 → 片头 → 正片1 → 正片2 → 正片3 八强之争，支间 1.8s 黑屏） | 每 **45 分钟** | 约 12 分 30 秒 |
 | 赛事前瞻（8 张 1080p 图例） | 每 **15 分钟** | 每张 20 秒 |
+| 选人阶段加长版（全屏，带转场） | 每 **小时整点** | 约 13 分钟 |
 
 ## 部署（GitHub Pages）
 
