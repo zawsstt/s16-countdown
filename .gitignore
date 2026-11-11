@@ -29,3 +29,6 @@ public/assets/aistudio/promo*_full.mp4
 
 # AI Studio 导出时的临时素材，代码未引用
 .aistudio/
+
+# 图片替换前的原始备份
+.backup/
