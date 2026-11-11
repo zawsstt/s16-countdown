@@ -5,9 +5,15 @@ export type BroadcastSlotId = 'promo_video' | 'data_preview';
  */
 export const SLOT_PREWARM_LEAD_SECONDS = 300;
 
+/**
+ * 大屏弹幕轨道总数与同屏最大 DOM 渲染上限（7 条轨道 × 每轨最多 2 条同屏 = 14 个并发 DOM 节点）
+ */
+export const DANMAKU_LANE_COUNT = 7;
+export const DANMAKU_MAX_CONCURRENT_DOM = 14;
+
 export interface CountdownFormatted {
   mode: 'finals_date';
-  primaryDisplay: string; // e.g. "04D 10:04:22"
+  primaryDisplay: string; // e.g. "102:00:00"
   days: number;
   hours: number;
   minutes: number;
@@ -267,4 +273,203 @@ export function mergeDanmakuMessage<T extends { id: string }>(list: T[], incomin
   }
   const appended = [...list, incoming];
   return appended.length > maxItems ? appended.slice(appended.length - maxItems) : appended;
+}
+
+// ============================================================================
+// 弹幕防重叠策略（Anti-Overlap）与同屏/列表虚拟化（Virtualization & DOM Cap）
+// ============================================================================
+
+export interface DanmakuLikeItem {
+  id: string;
+  text: string;
+  author: string;
+  team: 'GEN' | 'BLG' | 'NEUTRAL';
+  color: string;
+  timestamp: number;
+  lane: number;
+  likes: number;
+}
+
+export interface ScheduledFloatingDanmaku<T extends DanmakuLikeItem = DanmakuLikeItem> {
+  item: T;
+  /** 经过防重叠重分配后的实际轨道编号 (0..laneCount-1) */
+  assignedLane: number;
+  /** 轨道垂直百分比位置 */
+  topPercent: number;
+  /** 同轨道当前密度（该轨道上的活跃弹幕数） */
+  laneDensity: number;
+  /** 动态拉开后的动画延迟（秒），确保同轨道前后弹幕绝不追尾重叠 */
+  delaySec: number;
+  /** 滚动持续时间（秒），根据文本长度与同轨道密度微调 */
+  durationSec: number;
+  /** 同轨道动态间隔（秒） */
+  intervalSec: number;
+}
+
+/**
+ * 发送新弹幕时，检测当前各轨道活跃弹幕密度，优先挑选最空闲的轨道
+ */
+export function selectLeastCrowdedDanmakuLane<T extends Pick<DanmakuLikeItem, 'lane' | 'timestamp' | 'text'>>(
+  messages: T[],
+  nowMs: number,
+  laneCount = DANMAKU_LANE_COUNT
+): number {
+  const safeLaneCount = Math.max(1, laneCount);
+  const laneScores = new Array<number>(safeLaneCount).fill(0);
+
+  // 统计最近 18 秒内各轨道的弹幕密度与字数权重
+  const recentWindowMs = 18000;
+  for (const msg of messages) {
+    const ageMs = Math.max(0, nowMs - msg.timestamp);
+    if (ageMs <= recentWindowMs) {
+      const laneIdx = ((msg.lane ?? 0) % safeLaneCount + safeLaneCount) % safeLaneCount;
+      const recencyWeight = 1 + (recentWindowMs - ageMs) / recentWindowMs;
+      const lengthWeight = Math.min(2.2, Math.max(0.6, msg.text.length / 18));
+      laneScores[laneIdx] += recencyWeight * lengthWeight;
+    }
+  }
+
+  let bestLane = 0;
+  let minScore = laneScores[0];
+  for (let i = 1; i < safeLaneCount; i++) {
+    if (laneScores[i] < minScore) {
+      minScore = laneScores[i];
+      bestLane = i;
+    }
+  }
+  return bestLane;
+}
+
+/**
+ * 弹幕防重叠调度器 + 同屏 DOM 数量上限控制：
+ * 1. 限制同屏最多渲染 `maxConcurrentDom`（默认 24）个 DOM 节点，减轻弹幕高峰期 CPU/GPU 合成负担；
+ * 2. 检测每条轨道上的弹幕密度（laneDensity），若原轨道过于拥挤则智能分流到相邻空闲轨道；
+ * 3. 根据同轨道当前密度与前一条弹幕的文本长度，动态增大同轨道弹幕之间的滚动间隔（intervalSec），
+ *    从而保证同一轨道上的弹幕前后保持充足安全距离，绝不发生文字重叠。
+ */
+export function computeAntiOverlapDanmakuLayout<T extends DanmakuLikeItem>(
+  messages: T[],
+  nowMs: number,
+  maxConcurrentDom = DANMAKU_MAX_CONCURRENT_DOM,
+  laneCount = DANMAKU_LANE_COUNT
+): ScheduledFloatingDanmaku<T>[] {
+  const safeLaneCount = Math.max(1, laneCount);
+  const safeCap = Math.max(1, maxConcurrentDom);
+
+  // 仅截取最新的 maxConcurrentDom 条弹幕上屏渲染，严格控制同屏 DOM 数量
+  const visibleSlice = messages.slice(-safeCap);
+  if (visibleSlice.length === 0) return [];
+
+  // 第一步：轮转 + 密度感知分配轨道，确保每条轨道均匀承载，绝不扎堆
+  const laneCounts = new Array<number>(safeLaneCount).fill(0);
+  const preliminaryLanes: number[] = [];
+
+  for (let i = 0; i < visibleSlice.length; i++) {
+    const rawLane = ((visibleSlice[i].lane ?? i) % safeLaneCount + safeLaneCount) % safeLaneCount;
+    let chosenLane = rawLane;
+
+    // 若原轨道已经有弹幕，优先分配到当前最空闲的轨道
+    let minLane = 0;
+    for (let l = 1; l < safeLaneCount; l++) {
+      if (laneCounts[l] < laneCounts[minLane]) {
+        minLane = l;
+      }
+    }
+    if (laneCounts[rawLane] > laneCounts[minLane]) {
+      chosenLane = minLane;
+    }
+
+    laneCounts[chosenLane] += 1;
+    preliminaryLanes.push(chosenLane);
+  }
+
+  // 第二步：同轨道严格等距相位隔开（同轨第 0 条与第 1 条至少相差半个屏幕周期 ~8.5s），彻底杜绝同轨追尾或重叠
+  const laneOrderIndex = new Array<number>(safeLaneCount).fill(0);
+
+  return visibleSlice.map((msg, idx) => {
+    const assignedLane = preliminaryLanes[idx];
+    const laneDensity = laneCounts[assignedLane];
+    const orderInLane = laneOrderIndex[assignedLane];
+    laneOrderIndex[assignedLane] += 1;
+
+    // 同一轨道内的所有弹幕共享完全相同的滚动时长（durationSec），这样后发弹幕永远追不上前发弹幕
+    const durationSec = Number((17.0 + (assignedLane % 3) * 1.2).toFixed(2));
+
+    // 根据同轨道弹幕密度与文本长度动态计算安全滚动间隔（最少半屏 8.2s 间隔）
+    const charBoostSec = Math.min(2.5, Math.max(0.5, msg.text.length * 0.06));
+    const baseGapSec = durationSec / Math.max(2, laneDensity);
+    const intervalSec = Number(Math.max(4.2, baseGapSec + charBoostSec * 0.4).toFixed(2));
+
+    const isFresh = Math.max(0, nowMs - msg.timestamp) < 4000;
+    let delaySec: number;
+    if (isFresh && idx === visibleSlice.length - 1) {
+      delaySec = 0;
+    } else {
+      // 不同轨道错开 1.65s 进场，同轨道第 k 条严格拉开 orderInLane * baseGapSec 秒
+      const lanePhaseSec = assignedLane * 1.65 + orderInLane * baseGapSec;
+      delaySec = Number((-(lanePhaseSec % (durationSec - 1.2))).toFixed(2));
+    }
+
+    const topPercent = Number((5.0 + assignedLane * (85 / safeLaneCount)).toFixed(2));
+
+    return {
+      item: msg,
+      assignedLane,
+      topPercent,
+      laneDensity,
+      delaySec,
+      durationSec,
+      intervalSec,
+    };
+  });
+}
+
+export interface VirtualizedListWindow {
+  startIndex: number;
+  endIndex: number;
+  topSpacerPx: number;
+  bottomSpacerPx: number;
+  visibleCount: number;
+}
+
+/**
+ * 弹幕抽屉列表虚拟化窗口计算器（仅渲染视口可见行 + 上下缓冲区，降低高峰期 DOM 数量）
+ */
+export function computeVirtualizedDanmakuWindow(
+  totalItems: number,
+  scrollTop: number,
+  viewportHeight: number,
+  rowHeight: number,
+  overscan = 4
+): VirtualizedListWindow {
+  const safeTotal = Math.max(0, totalItems);
+  const safeRowHeight = Math.max(20, rowHeight);
+  const safeViewport = Math.max(safeRowHeight, viewportHeight);
+  const safeScrollTop = Math.max(0, scrollTop);
+
+  if (safeTotal === 0) {
+    return {
+      startIndex: 0,
+      endIndex: 0,
+      topSpacerPx: 0,
+      bottomSpacerPx: 0,
+      visibleCount: 0,
+    };
+  }
+
+  const rawStart = Math.floor(safeScrollTop / safeRowHeight);
+  const visibleRows = Math.ceil(safeViewport / safeRowHeight);
+
+  const startIndex = Math.max(0, rawStart - overscan);
+  const endIndex = Math.min(safeTotal, rawStart + visibleRows + overscan);
+  const topSpacerPx = startIndex * safeRowHeight;
+  const bottomSpacerPx = Math.max(0, (safeTotal - endIndex) * safeRowHeight);
+
+  return {
+    startIndex,
+    endIndex,
+    topSpacerPx,
+    bottomSpacerPx,
+    visibleCount: endIndex - startIndex,
+  };
 }

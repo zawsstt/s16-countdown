@@ -30,6 +30,9 @@ import {
   SlotCountdownState,
   BroadcastSlotQueueState,
   BroadcastSlotId,
+  computeAntiOverlapDanmakuLayout,
+  DANMAKU_MAX_CONCURRENT_DOM,
+  DANMAKU_LANE_COUNT,
 } from '../utils/broadcastLogic';
 import type { DanmakuMessage } from '../../server';
 
@@ -590,8 +593,17 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
     });
   };
 
-  // Latest 16 danmaku messages for full-screen floating overlay
-  const floatingDanmaku = danmakuList.slice(-16);
+  // 弹幕防重叠与同屏 DOM 上限调度（最多同时挂载 24 个 DOM 元素，并根据同轨道密度动态拉开滚动间隔）
+  const scheduledFloatingDanmaku = React.useMemo(
+    () =>
+      computeAntiOverlapDanmakuLayout(
+        danmakuList,
+        Date.now(),
+        DANMAKU_MAX_CONCURRENT_DOM,
+        DANMAKU_LANE_COUNT
+      ),
+    [danmakuList]
+  );
   const currentPromoItem = PROMO_VIDEO_SLOT[promoItemIndex] || PROMO_VIDEO_SLOT[0];
   // 一支宣传片可能被拆成多段，HUD 上按「第几支」显示而不是「第几段」
   const currentPromoGroupIndex = Math.max(
@@ -913,16 +925,18 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
           style={{ opacity: danmakuOpacity }}
           className="pointer-events-none absolute inset-x-0 top-[24%] bottom-[12%] overflow-hidden z-[45]"
         >
-          {floatingDanmaku.map((dm, idx) => {
-            const laneTop = 6 + ((dm.lane ?? idx) % 7) * 12.5;
-            const isFresh = Date.now() - dm.timestamp < 6000;
-            const delaySec = isFresh ? 0 : -((idx * 2.3) % 13.5);
+          {scheduledFloatingDanmaku.map((scheduled) => {
+            const dm = scheduled.item;
             return (
               <div
                 key={dm.id}
+                data-lane={scheduled.assignedLane}
+                data-lane-density={scheduled.laneDensity}
+                data-interval-sec={scheduled.intervalSec}
                 style={{
-                  top: `${laneTop}%`,
-                  animationDelay: `${delaySec}s`,
+                  top: `${scheduled.topPercent}%`,
+                  animationDelay: `${scheduled.delaySec}s`,
+                  animationDuration: `${scheduled.durationSec}s`,
                   color: dm.color || '#ffffff',
                 }}
                 className="absolute whitespace-nowrap animate-danmaku flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/55 backdrop-blur-[2px] border border-white/15 text-xs sm:text-sm md:text-base font-bold drop-shadow-[0_2px_6px_rgba(0,0,0,0.95)]"

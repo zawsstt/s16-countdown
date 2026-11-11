@@ -68,18 +68,7 @@ export const TRANSITION_STINGER_SLOT: TransitionStingerSlotConfig = {
 /**
  * 宣传片倒计时播报列表（每 45 分钟自动触发一次）
  *
- * 播放顺序：片头 → 正片1（4段）→ 1.8s 黑屏 → 正片2（3段）→ 1.8s 黑屏 → 正片3（4段）
- *
- * 为什么要拆成多段：
- *   Cloudflare Pages 单个文件硬上限 25 MiB。若把 70~83MB 的原片压进 25MiB，
- *   码率只剩 0.6~1.2 Mbps，画面明显发糊。改成「按场景切点无损切成多段」后，
- *   每段 <25MiB 但码率保持原样（2.2~3.0 Mbps），画质与原片完全一致。
- *   段与段之间用 seamlessNext 直接续播，不插黑屏，肉眼几乎察觉不到接缝。
- *
- * 其它加载要点：
- *   - 所有片段都是 +faststart（moov 索引前置），开头几百 KB 就能起播
- *   - 前端只在需要时才拉起下一段的缓冲，不会十几段一起抢带宽
- *   - 每段都有独立首帧海报，接缝处不会闪黑
+ * 播放顺序：片头 → 正片1（4段）→ 1.8s 黑屏 → 正片2（3段）→ 1.8s 黑屏 → 正片3（4段）→ 1.8s 黑屏 → 正片4（开幕式预告片，排在最后）
  */
 
 interface PromoGroupConfig {
@@ -146,6 +135,14 @@ const PROMO_GROUPS: PromoGroupConfig[] = [
       'poster_promo3_p4.jpg',
     ],
   },
+  {
+    id: 'promo-4',
+    title: 'WORLDS 2026 · 冠亚军决赛开幕式宣传片',
+    subtitle: 'FINAL OPENING CEREMONY TRAILER · PRESENTED BY MASTERCARD',
+    parts: ['promo4_p1.mp4'],
+    whole: 'promo4_full.mp4',
+    posters: ['poster_promo4_p1.jpg'],
+  },
 ];
 
 /** 片头是单独一段文件，不属于任何正片分组 */
@@ -167,9 +164,7 @@ function buildPromoSlot(): PromoVideoSlotItem[] {
     muteAudio: true,
   });
 
-  // 2. 三支正片
-  //    - 默认：按段展开（Cloudflare 单文件上限 25MiB，必须分段）
-  //    - VITE_SINGLE_PROMO_FILE=true：用无损拼接好的整片，完全无接缝（GitHub Pages）
+  // 2. 四支正片
   const useSingleFile = import.meta.env.VITE_SINGLE_PROMO_FILE === 'true';
 
   PROMO_GROUPS.slice(1).forEach((group) => {
@@ -202,7 +197,7 @@ export const PROMO_GROUP_IDS: string[] = Array.from(
 
 /**
  * 赛事数据前瞻倒计时播报列表（每 15 分钟 :00 / :15 / :30 / :45 自动触发）
- * 填充用户上传的 7 张官方 1080p 赛事数据图例（____1 ~ ____7）
+ * 填充用户上传并更新后的 8 张官方 1080p 赛事数据图例（____1 ~ ____8）
  */
 export const MATCH_DATA_PREVIEW_SLOT: MatchDataPreviewSlotItem[] = [
   {
@@ -253,5 +248,12 @@ export const MATCH_DATA_PREVIEW_SLOT: MatchDataPreviewSlotItem[] = [
     subtitle: 'CHOVY & CANYON 2019–2026 连续八届全球总决赛战绩一览',
     tag: 'CAREER MILESTONE',
     graphicImageUrl: 'assets/aistudio/____7_af56e80b.png',
+  },
+  {
+    id: 'data-preview-8-blg-vs-lck-bo5',
+    title: '26 BLG VS LCK IN BO5 · BLG在BO5中面对LCK队伍',
+    subtitle: '2026 全球总决赛八强 3:0 DK · 四强 3:1 T1 · 决赛 VS GEN 待交手',
+    tag: 'BLG VS LCK IN BO5',
+    graphicImageUrl: 'assets/aistudio/____8_blg_vs_lck_bo5.png',
   },
 ];

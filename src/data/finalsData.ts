@@ -35,8 +35,7 @@ export interface PlayerProfile {
 
 /**
  * 右侧导播小窗滚动画面列表
- * - 已纳入用户最新上传的 5 张轮播图（轮播1 ~ 轮播5）
- * - 已按要求移除“领头开车”与“BLG全球总决赛首发五虎定妆照”
+ * - 包含用户上传的轮播图（轮播1、轮播2、轮播3、轮播5）以及更新后的赛事前瞻8（26 BLG VS LCK IN BO5）
  */
 export const BROADCAST_SLIDES: BroadcastSlide[] = [
   {
@@ -47,6 +46,24 @@ export const BROADCAST_SLIDES: BroadcastSlide[] = [
     imageUrl: 'assets/aistudio/__1_e131e88d.png',
     badgeText: 'BLG · VIPER',
     photographerOrSource: 'WORLDS 2026 OFFICIAL FEED',
+  },
+  {
+    id: 'carousel-upload-2-flash-your-support',
+    title: 'FLASH YOUR SUPPORT · 全球总决赛战队联名表情助威',
+    subtitle: '官方联赛战队应援表情包 · 收益与各大赛区一队共享',
+    category: 'EVENT',
+    imageUrl: 'assets/aistudio/__2_effbf4c7.png',
+    badgeText: 'FLASH YOUR SUPPORT',
+    photographerOrSource: 'WORLDS 2026 OFFICIAL FEED',
+  },
+  {
+    id: 'carousel-upload-8-blg-vs-lck-bo5',
+    title: '26 BLG VS LCK IN BO5 · BLG在BO5中面对LCK队伍',
+    subtitle: '2026 全球总决赛八强 3:0 DK · 四强 3:1 T1 · 决赛 VS GEN 待交手',
+    category: 'BLG',
+    imageUrl: 'assets/aistudio/____8_blg_vs_lck_bo5.png',
+    badgeText: 'BLG VS LCK IN BO5',
+    photographerOrSource: 'WORLDS 2026 DATA PREVIEW',
   },
   {
     id: 'carousel-upload-3-blg-signature',
