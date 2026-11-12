@@ -73,6 +73,26 @@ export default function App() {
     return false;
   });
 
+  // 调试用：?hourlyAfter=N 表示 N 秒后触发全屏长片，便于复现「宣传片播放中被长片打断」的场景
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const after = new URLSearchParams(window.location.search).get('hourlyAfter');
+    if (!after) return;
+    const delay = Math.max(1, Number(after) || 0) * 1000;
+    const timer = setTimeout(() => setIsHourlyVideoOpen(true), delay);
+    return () => clearTimeout(timer);
+  }, []);
+
+  // 调试用：?hourlyAfter=N 表示 N 秒后触发全屏长片，便于复现「宣传片播放中被长片打断」的场景
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const after = new URLSearchParams(window.location.search).get('hourlyAfter');
+    if (!after) return;
+    const delay = Math.max(1, Number(after) || 0) * 1000;
+    const timer = setTimeout(() => setIsHourlyVideoOpen(true), delay);
+    return () => clearTimeout(timer);
+  }, []);
+
   /** 下一次整点的时间戳 */
   const [nextHourlyAt, setNextHourlyAt] = useState<number>(() => {
     const d = new Date();
@@ -95,6 +115,8 @@ export default function App() {
    */
   const [hourlyFrozenSlotNow, setHourlyFrozenSlotNow] = useState<number | null>(null);
   const hourlyFrozenSlotNowRef = useRef<number | null>(null);
+  /** 供只执行一次的 effect（首次点击解锁音频）读取最新值 */
+  const isHourlyVideoOpenRef = useRef(false);
 
   // Broadcast media slot playback queue (handles single slot triggers & 45min/15min coincidence priority: promo_video -> data_preview)
   const [slotQueue, setSlotQueue] = useState<BroadcastSlotQueueState>({
@@ -358,6 +380,7 @@ export default function App() {
           current.paused &&
           wantsPlayRef.current &&
           !isMutedRef.current &&
+          !isHourlyVideoOpenRef.current &&
           slotQueueRef.current !== 'promo_video'
         ) {
           current.play().catch(() => {});
@@ -440,6 +463,12 @@ export default function App() {
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
+    /**
+     * 全屏长片期间由 HourlyVideoOverlay 独占音频：
+     * 这里直接返回，任何 slot 变化都不处理，避免「换歌 + 播放」把战歌顶起来。
+     * （长片打开时也不会清空 slotQueue，退出后原页面原样还在）
+     */
+    if (isHourlyVideoOpen) return;
     const slot = slotQueue.activeSlot;
     const prev = prevSlotRef.current;
     if (slot === prev) return;
@@ -467,7 +496,7 @@ export default function App() {
       }
       loadTrack(nextIndex, wantsPlayRef.current && !isMutedRef.current);
     }
-  }, [slotQueue.activeSlot, loadTrack]);
+  }, [slotQueue.activeSlot, loadTrack, isHourlyVideoOpen]);
 
   const toggleBgmPlay = useCallback(() => {
     triggerBgmPulse();
@@ -826,8 +855,13 @@ export default function App() {
       const frozen = Date.now() + slotClockOffsetMs;
       hourlyFrozenSlotNowRef.current = frozen;
       setHourlyFrozenSlotNow(frozen);
-      // 正在播的宣传片 / 赛事前瞻先收掉，避免被全屏影片盖住还在后台跑
-      setSlotQueue({ activeSlot: null, pendingSlots: [] });
+      /**
+       * 注意：这里**不能**清空 slotQueue。
+       * 一旦把 activeSlot 置空，BGM 的切页 effect 会看到 prev === 'promo_video'，
+       * 误判为「刚离开宣传片」→ 自动换一首歌并播放，于是全屏长片期间首页战歌突然响起。
+       * 保留 slot 状态即可：BroadcastStage 的视频已经被 isHourlyVideoActive 释放，
+       * 不会在后台抢解码器；退出后原页面原样还在。
+       */
       return;
     }
     if (hourlyFrozenSlotNowRef.current !== null) {
@@ -841,6 +875,11 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isHourlyVideoOpen]);
 
+  // 把开关同步到 ref，供首次点击解锁音频的逻辑使用
+  useEffect(() => {
+    isHourlyVideoOpenRef.current = isHourlyVideoOpen;
+  }, [isHourlyVideoOpen]);
+
   // 全屏影片期间让位给影片原声：暂停战歌，关闭后恢复
   useEffect(() => {
     const audio = audioRef.current;
@@ -848,11 +887,17 @@ export default function App() {
     if (isHourlyVideoOpen) {
       wantsPlayRef.current = false;
       if (!audio.paused) audio.pause();
-    } else if (slotQueueRef.current !== 'promo_video' && !isMutedRef.current) {
+      setIsBgmPlaying(false);
+    } else if (
+      slotQueue.activeSlot !== 'promo_video' &&
+      slotQueue.activeSlot !== 'data_preview' &&
+      !isMutedRef.current
+    ) {
+      // 退出长片后回到主页才恢复战歌；如果原本停在宣传片/前瞻里就保持安静
       wantsPlayRef.current = true;
       audio.play().catch(() => {});
     }
-  }, [isHourlyVideoOpen]);
+  }, [isHourlyVideoOpen, slotQueue.activeSlot]);
 
   const isBgmActive = isBgmPlaying && slotQueue.activeSlot !== 'promo_video';
 
