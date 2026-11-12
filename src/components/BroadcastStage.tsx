@@ -33,6 +33,21 @@ import {
 } from '../utils/broadcastLogic';
 import type { DanmakuMessage } from '../../server';
 
+/**
+ * 调试用：?promoStart=N 指定进入宣传片时从第 N 支开始（1 起算）。
+ * 用于单独验收某一支宣传片，不影响正常播放。
+ */
+function resolveInitialPromoIndex(): number {
+  if (typeof window === 'undefined') return 0;
+  const raw = new URLSearchParams(window.location.search).get('promoStart');
+  if (!raw) return 0;
+  // 按「支」（组）计数，而不是按分段：promo1 有 4 段，但只算 1 支
+  const n = Math.max(1, Math.min(PROMO_GROUP_IDS.length, Number(raw) || 1));
+  const targetGroupId = PROMO_GROUP_IDS[n - 1];
+  const idx = PROMO_VIDEO_SLOT.findIndex((item) => item.groupId === targetGroupId);
+  return idx >= 0 ? idx : 0;
+}
+
 interface BroadcastStageProps {
   countdown: CountdownFormatted;
   /** 每小时整点全屏影片是否正在播放：为 true 时释放本页所有视频，避免抢硬件解码器 */
@@ -104,7 +119,7 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
   const [displayedSlot, setDisplayedSlot] = useState<BroadcastSlotId | null>(
     () => slotQueue.activeSlot
   );
-  const [promoItemIndex, setPromoItemIndex] = useState(0);
+  const [promoItemIndex, setPromoItemIndex] = useState(resolveInitialPromoIndex);
   const [isInterPromoBlackScreen, setIsInterPromoBlackScreen] = useState(false);
   const [isPromoVideoMuted, setIsPromoVideoMuted] = useState(false);
   const [dataItemIndex, setDataItemIndex] = useState(0);
@@ -240,11 +255,12 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
 
     let transitionLabel = 'THIS IS OUR MOMENT';
     if (activeSlot === 'promo_video') {
-      setPromoItemIndex(0);
-      const firstPromoVid = promoVideoRefs.current[0];
+      const startIdx = resolveInitialPromoIndex();
+      setPromoItemIndex(startIdx);
+      const firstPromoVid = promoVideoRefs.current[startIdx];
       if (firstPromoVid) {
         try {
-          firstPromoVid.currentTime = PROMO_VIDEO_SLOT[0]?.startSec ?? 0;
+          firstPromoVid.currentTime = PROMO_VIDEO_SLOT[startIdx]?.startSec ?? 0;
         } catch {
           // ignore
         }

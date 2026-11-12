@@ -155,6 +155,15 @@ const PROMO_GROUPS: PromoGroupConfig[] = [
       'poster_promo3_p4.jpg',
     ],
   },
+  {
+    // 队列最后一支：2024 世界大赛总决赛 T1 vs BLG「創造信仰」
+    // 原始文件 65.8MB / 7分10秒 / 1080p，moov 在文件末尾，已无损重封装为 +faststart
+    id: 'promo-4',
+    title: 'WORLDS 2024 · 創造信仰 · T1 vs BLG 总决赛',
+    subtitle: 'CREED · T1 VS BILIBILI GAMING · 2024 WORLD CHAMPIONSHIP FINAL',
+    parts: ['promo4_t1_vs_blg_2024.mp4'],
+    posters: ['poster_promo4_t1_vs_blg_2024.jpg'],
+  },
 ];
 
 /** 片头是单独一段文件，不属于任何正片分组 */
