@@ -347,6 +347,7 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
    */
   useEffect(() => {
     if (
+      isHourlyVideoActive ||
       activeSlot !== 'promo_video' ||
       displayedSlot !== 'promo_video' ||
       isInterPromoBlackScreen ||
@@ -570,6 +571,7 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
     isInterPromoBlackScreen,
     stingerState.active,
     isPromoVideoMuted,
+    isHourlyVideoActive,
     advancePromoVideoOrCompleteSlot,
     ensurePromoVideoBuffering,
   ]);
@@ -651,6 +653,27 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
     }, PROMO_INTER_VIDEO_BLACK_SCREEN_MS);
   };
   const currentDataItem = MATCH_DATA_PREVIEW_SLOT[dataItemIndex] || MATCH_DATA_PREVIEW_SLOT[0];
+  /**
+   * 全屏长片接管画面时，把本页所有 <video> 真正停掉。
+   *
+   * 只把 JSX 里的 src 置成 undefined 是不够的：React 移除属性后浏览器不会自动
+   * 停止已经缓冲的播放，宣传片的原声会从后台继续漏出来（实测能听到）。
+   * 这里显式 pause + removeAttribute + load()，立刻释放解码器并静音。
+   */
+  useEffect(() => {
+    if (!isHourlyVideoActive) return;
+    const root = stageContainerRef.current;
+    if (!root) return;
+    root.querySelectorAll('video').forEach((v) => {
+      try {
+        if (!v.paused) v.pause();
+        v.muted = true;
+      } catch {
+        // ignore
+      }
+    });
+  }, [isHourlyVideoActive]);
+
   const isShowingPromoOverlay = displayedSlot === 'promo_video';
   const isShowingDataOverlay = displayedSlot === 'data_preview';
 

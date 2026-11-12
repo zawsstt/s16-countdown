@@ -888,12 +888,10 @@ export default function App() {
       wantsPlayRef.current = false;
       if (!audio.paused) audio.pause();
       setIsBgmPlaying(false);
-    } else if (
-      slotQueue.activeSlot !== 'promo_video' &&
-      slotQueue.activeSlot !== 'data_preview' &&
-      !isMutedRef.current
-    ) {
-      // 退出长片后回到主页才恢复战歌；如果原本停在宣传片/前瞻里就保持安静
+    } else if (slotQueue.activeSlot !== 'promo_video' && !isMutedRef.current) {
+      // 退出长片后恢复战歌：
+      // 主页要恢复；赛事前瞻本来就有配乐，也要恢复；
+      // 只有宣传片例外——它有自己的原声，战歌必须保持安静。
       wantsPlayRef.current = true;
       audio.play().catch(() => {});
     }
