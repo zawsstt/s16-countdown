@@ -49,6 +49,27 @@ import {
 } from './utils/supabaseDanmaku';
 import type { DanmakuMessage } from '../server';
 
+/**
+ * 距决赛开赛剩余分钟数。
+ * 调试用：?mockMinutes=N 可伪造剩余分钟数，用于验证 30/20 分钟两个阈值。
+ */
+function resolveMinutesToFinals(nowMs: number): number {
+  if (typeof window !== 'undefined') {
+    const mock = new URLSearchParams(window.location.search).get('mockMinutes');
+    if (mock !== null && mock !== '') {
+      const n = Number(mock);
+      if (Number.isFinite(n)) return Math.max(0, Math.floor(n));
+    }
+  }
+  return Math.max(0, Math.floor((getFinalsTargetTimestamp() - nowMs) / 60000));
+}
+
+/** 0 秒倒计时（旗帜画面）锁定的专属战歌：Know My Name */
+const KNOW_MY_NAME_TRACK_INDEX = Math.max(
+  0,
+  BGM_PLAYLIST.findIndex((t) => t.id === 'know-my-name')
+);
+
 /** 弹幕数据来源：supabase（线上多人共享） / local（本地 ws 服务） */
 type DanmakuSource = 'supabase' | 'local';
 
@@ -64,6 +85,18 @@ export default function App() {
 
   // 导播控制台「赛前数据统计」Recharts 面板开关
   const [isPreMatchStatsOpen, setIsPreMatchStatsOpen] = useState<boolean>(false);
+
+  // 0 秒开赛旗帜画面预览开关（真实倒计时归零时会自动激活；?zeroFlag=1 可直接预览）
+  const [isZeroFlagPreview, setIsZeroFlagPreview] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return new URLSearchParams(window.location.search).get('zeroFlag') === '1';
+    }
+    return false;
+  });
+  // 供只执行一次/回调类逻辑读取的旗帜模式标记
+  const isZeroFlagModeRef = useRef<boolean>(false);
+  // 进入旗帜模式前的曲目，用于预览退出后恢复
+  const prevTrackBeforeZeroRef = useRef<number | null>(null);
 
   // 每小时整点全屏播放「选人阶段加长版」（?hourly=1 可手动触发，便于调试）
   const [isHourlyVideoOpen, setIsHourlyVideoOpen] = useState<boolean>(() => {
@@ -104,9 +137,18 @@ export default function App() {
   // Real-time timestamp for Beijing Time Sunday Nov 15, 2026 03:00 AM Finals countdown
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   // Align periodic slot clock to start at a 3-minute (03:00 = 180s) countdown on page load/refresh
-  const [slotClockOffsetMs, setSlotClockOffsetMs] = useState<number>(() =>
-    getInitialSlotClockOffsetMs(Date.now(), 180)
-  );
+  const [slotClockOffsetMs, setSlotClockOffsetMs] = useState<number>(() => {
+    // 调试用：?slotFast=N 让「下一个插播触发点」提前到 N 秒后，便于验证 30 分钟抑制
+    if (typeof window !== 'undefined') {
+      const fast = new URLSearchParams(window.location.search).get('slotFast');
+      if (fast !== null && fast !== '') {
+        const sec = Math.max(1, Math.min(179, Number(fast) || 1));
+        const target = (180000 - sec * 1000) % 180000;
+        return target - (Date.now() % 180000);
+      }
+    }
+    return getInitialSlotClockOffsetMs(Date.now(), 180);
+  });
 
   /**
    * 全屏影片播放期间把「宣传片倒计时 / 赛事前瞻倒计时」冻结。
@@ -314,9 +356,15 @@ export default function App() {
         const promoState = calculatePromoSlotCountdown(currentSlotNow);
         const dataState = calculateDataPreviewSlotCountdown(currentSlotNow);
 
+        // 距开赛 30 分钟内停止自动插播：让画面稳定在倒计时/旗帜上
+        const minutesLeft = resolveMinutesToFinals(currentNow);
+        const suppressAutoSlots = minutesLeft <= 30;
+
         const triggered: BroadcastSlotId[] = [];
-        if (promoState.shouldTrigger) triggered.push('promo_video');
-        if (dataState.shouldTrigger) triggered.push('data_preview');
+        if (!suppressAutoSlots) {
+          if (promoState.shouldTrigger) triggered.push('promo_video');
+          if (dataState.shouldTrigger) triggered.push('data_preview');
+        }
 
         if (triggered.length > 0) {
           setSlotQueue((prev) => enqueueBroadcastSlots(prev, triggered));
@@ -345,6 +393,11 @@ export default function App() {
     loadTrack(0, true);
 
     const handleEnded = () => {
+      // 0 秒开赛模式：单曲循环 Know My Name，不往下切
+      if (isZeroFlagModeRef.current) {
+        loadTrack(KNOW_MY_NAME_TRACK_INDEX, wantsPlayRef.current);
+        return;
+      }
       loadTrack(getNextTrackIndex(trackIndexRef.current), wantsPlayRef.current);
     };
     audio.addEventListener('ended', handleEnded);
@@ -481,7 +534,9 @@ export default function App() {
     }
 
     if (slot === 'data_preview') {
-      const nextIndex = getRandomDifferentTrackIndex(trackIndexRef.current);
+      const nextIndex = isZeroFlagModeRef.current
+        ? KNOW_MY_NAME_TRACK_INDEX
+        : getRandomDifferentTrackIndex(trackIndexRef.current);
       if (!isMutedRef.current) {
         wantsPlayRef.current = true;
       }
@@ -490,7 +545,9 @@ export default function App() {
     }
 
     if (prev === 'promo_video' || prev === 'data_preview') {
-      const nextIndex = getRandomDifferentTrackIndex(trackIndexRef.current);
+      const nextIndex = isZeroFlagModeRef.current
+        ? KNOW_MY_NAME_TRACK_INDEX
+        : getRandomDifferentTrackIndex(trackIndexRef.current);
       if (!isMutedRef.current) {
         wantsPlayRef.current = true;
       }
@@ -524,6 +581,12 @@ export default function App() {
   const handleNextTrack = useCallback(() => {
     triggerBgmPulse();
     ensureAudioAnalyser();
+    // 0 秒开赛模式锁定战歌：点下一首也只会重播 Know My Name
+    if (isZeroFlagModeRef.current) {
+      wantsPlayRef.current = true;
+      loadTrack(KNOW_MY_NAME_TRACK_INDEX, !isMutedRef.current);
+      return;
+    }
     const nextIndex = getNextTrackIndex(trackIndexRef.current);
     wantsPlayRef.current = true;
     loadTrack(nextIndex, !isMutedRef.current);
@@ -904,6 +967,44 @@ export default function App() {
   const promoCountdown = calculatePromoSlotCountdown(slotNowMs);
   const dataPreviewCountdown = calculateDataPreviewSlotCountdown(slotNowMs);
 
+  /** 调试用：?mockZero=1 强制模拟"真实归零"（用于验证锁定态，预览态请用 ?zeroFlag=1） */
+  const isMockZero =
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('mockZero') === '1';
+
+  /** 0 秒开赛模式：倒计时真正归零，或手动开启预览 */
+  const isZeroFlagMode = activeCountdown.isZero || isZeroFlagPreview || isMockZero;
+
+  /** 距开赛剩余分钟数（用于 20 分钟内隐藏宣传片/前瞻入口；?mockMinutes=N 可伪造） */
+  const minutesToFinals = resolveMinutesToFinals(nowMs);
+
+  /**
+   * 进入 0 秒开赛模式时：
+   * - 关掉正在播的宣传片 / 赛事前瞻（画面让位给旗帜）
+   * - 把背景音乐锁定为 Know My Name 并强制播放
+   * 退出预览时恢复到进入前的曲目。
+   */
+  useEffect(() => {
+    const wasZero = isZeroFlagModeRef.current;
+    isZeroFlagModeRef.current = isZeroFlagMode;
+
+    if (isZeroFlagMode && !wasZero) {
+      prevTrackBeforeZeroRef.current = trackIndexRef.current;
+      setSlotQueue({ activeSlot: null, pendingSlots: [] });
+      ensureAudioAnalyser();
+      wantsPlayRef.current = true;
+      if (trackIndexRef.current !== KNOW_MY_NAME_TRACK_INDEX || audioRef.current?.paused) {
+        loadTrack(KNOW_MY_NAME_TRACK_INDEX, !isMutedRef.current);
+      }
+    } else if (!isZeroFlagMode && wasZero && prevTrackBeforeZeroRef.current !== null) {
+      const restoreIdx = prevTrackBeforeZeroRef.current;
+      prevTrackBeforeZeroRef.current = null;
+      if (restoreIdx !== KNOW_MY_NAME_TRACK_INDEX) {
+        loadTrack(restoreIdx, wantsPlayRef.current && !isMutedRef.current);
+      }
+    }
+  }, [isZeroFlagMode, loadTrack, ensureAudioAnalyser]);
+
   return (
     <main
       id="broadcast-monitor"
@@ -941,6 +1042,10 @@ export default function App() {
         <BroadcastStage
           countdown={activeCountdown}
           isHourlyVideoActive={isHourlyVideoOpen}
+          isZeroFlagPreview={isZeroFlagPreview}
+          onExitZeroFlagPreview={() => setIsZeroFlagPreview(false)}
+          forceZero={isMockZero}
+          minutesToFinals={minutesToFinals}
           promoCountdown={promoCountdown}
           dataPreviewCountdown={dataPreviewCountdown}
           slotQueue={slotQueue}

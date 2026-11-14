@@ -32,6 +32,7 @@ import {
   BroadcastSlotId,
 } from '../utils/broadcastLogic';
 import type { DanmakuMessage } from '../../server';
+import { WorldsZeroFlagStage } from './WorldsZeroFlagStage';
 
 /**
  * 调试用：?promoStart=N 指定进入宣传片时从第 N 支开始（1 起算）。
@@ -52,6 +53,13 @@ interface BroadcastStageProps {
   countdown: CountdownFormatted;
   /** 每小时整点全屏影片是否正在播放：为 true 时释放本页所有视频，避免抢硬件解码器 */
   isHourlyVideoActive?: boolean;
+  /** 0 秒开赛旗帜画面预览模式 */
+  isZeroFlagPreview?: boolean;
+  onExitZeroFlagPreview?: () => void;
+  /** 距决赛开赛还有多少分钟（用于临近开赛时收起宣传片/前瞻入口） */
+  minutesToFinals?: number;
+  /** 调试用：强制视为已归零（锁定态），用于验证锁定效果 */
+  forceZero?: boolean;
   promoCountdown: SlotCountdownState;
   dataPreviewCountdown: SlotCountdownState;
   slotQueue: BroadcastSlotQueueState;
@@ -84,6 +92,10 @@ const REAL_PARTNER_BADGES = [
 export const BroadcastStage: React.FC<BroadcastStageProps> = ({
   countdown,
   isHourlyVideoActive = false,
+  isZeroFlagPreview = false,
+  onExitZeroFlagPreview,
+  minutesToFinals = 9999,
+  forceZero = false,
   promoCountdown,
   dataPreviewCountdown,
   slotQueue,
@@ -720,6 +732,14 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
 
   const isShowingPromoOverlay = displayedSlot === 'promo_video';
   const isShowingDataOverlay = displayedSlot === 'data_preview';
+  /** 0 秒开赛：倒计时归零或预览时，画面让位给旗帜（宣传片/前瞻优先让位） */
+  const effectiveIsZero = countdown.isZero || forceZero;
+  const isShowingZeroFlagStage =
+    (effectiveIsZero || isZeroFlagPreview) && !isShowingPromoOverlay && !isShowingDataOverlay;
+  /** 真正归零时强制锁屏：拦截一切点击（弹幕输入在组件外，不受影响） */
+  const isHardLocked = effectiveIsZero && isShowingZeroFlagStage;
+  /** 距开赛 20 分钟内：宣传片 / 赛事前瞻入口整体隐藏，避免误触 */
+  const isSlotEntryHidden = minutesToFinals <= 20;
 
   /**
    * 全屏遮罩（宣传片 / 赛事前瞻）盖住主页时，把左侧那块背景循环视频暂停掉。
@@ -807,12 +827,16 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
            ===================================================================== */}
         <div
           data-testid="top-right-slot-bars"
+          style={
+            isSlotEntryHidden || isShowingZeroFlagStage ? { display: 'none' } : undefined
+          }
           className="grid grid-cols-2 gap-2.5 md:flex md:items-center md:gap-3 md:absolute md:left-[61.2%] md:right-[1.4%] md:top-[4.8%] md:h-[12.4%] md:z-20"
         >
           {/* Progress Bar 1: 宣传片倒计时 */}
           <button
             type="button"
             data-testid="slot-bar-promo"
+            disabled={isShowingZeroFlagStage}
             onMouseEnter={() => setIsPromoPrewarmed(true)}
             onClick={() => {
               setIsPromoPrewarmed(true);
@@ -854,6 +878,7 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
           <button
             type="button"
             data-testid="slot-bar-data"
+            disabled={isShowingZeroFlagStage}
             onMouseEnter={() => setIsDataPrewarmed(true)}
             onClick={() => {
               setIsDataPrewarmed(true);
@@ -1037,7 +1062,7 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
         <div
           data-testid="danmaku-overlay"
           style={{ opacity: danmakuOpacity }}
-          className="pointer-events-none absolute inset-x-0 top-[24%] bottom-[12%] overflow-hidden z-[45]"
+          className="pointer-events-none absolute inset-x-0 top-[24%] bottom-[12%] overflow-hidden z-[48]"
         >
           {floatingDanmaku.map((dm, idx) => {
             const laneTop = 6 + ((dm.lane ?? idx) % 7) * 12.5;
@@ -1069,6 +1094,31 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
             );
           })}
         </div>
+      )}
+
+      {/* =====================================================================
+          5.5 ZERO-SECOND FLAG STAGE（倒计时归零 / 预览时接管主画面）
+         ===================================================================== */}
+      {isShowingZeroFlagStage && (
+        <div className="absolute inset-0 z-[46]">
+          <WorldsZeroFlagStage
+            isPreviewMode={Boolean(isZeroFlagPreview && !effectiveIsZero)}
+            onExitPreview={onExitZeroFlagPreview}
+          />
+        </div>
+      )}
+
+      {/* 硬锁遮罩：真实归零后拦截所有点击，只保留弹幕（弹幕组件在 BroadcastStage 之外） */}
+      {isHardLocked && (
+        <div
+          data-testid="zero-flag-hard-lock"
+          className="absolute inset-0 z-[70] cursor-not-allowed"
+          onClickCapture={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          onContextMenu={(e) => e.preventDefault()}
+        />
       )}
 
       {/* =====================================================================
