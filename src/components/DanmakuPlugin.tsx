@@ -49,7 +49,7 @@ const COLOR_OPTIONS = [
 
 /** 虚拟化列表单行固定高度（px）与可视容器高度（px） */
 const VIRTUAL_ROW_HEIGHT_PX = 46;
-const VIRTUAL_VIEWPORT_HEIGHT_PX = 184;
+const VIRTUAL_VIEWPORT_HEIGHT_PX = 280;
 
 export const DanmakuPlugin: React.FC<DanmakuPluginProps> = ({
   danmakuList,
@@ -271,7 +271,7 @@ export const DanmakuPlugin: React.FC<DanmakuPluginProps> = ({
               ))}
             </div>
             <span className="text-[10px] text-slate-400 font-mono">
-              渲染节点: {visibleRows.length}/{reversedFilteredList.length}
+              共 {reversedFilteredList.length} 条 · 滚动查看全部
             </span>
           </div>
 

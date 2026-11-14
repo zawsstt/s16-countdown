@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
@@ -121,6 +121,13 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
   );
   const [promoItemIndex, setPromoItemIndex] = useState(resolveInitialPromoIndex);
   const [isInterPromoBlackScreen, setIsInterPromoBlackScreen] = useState(false);
+  /** 大屏同时飘动的弹幕条数上限（受硬件与可读性限制） */
+  const DANMAKU_FLOAT_WINDOW = 16;
+  /** 每个飘动周期（14s）往后轮换的条数 */
+  const DANMAKU_FLOAT_STEP = 8;
+  /** 轮播批次计数：驱动 floatingDanmaku 滑动窗口 */
+  const [floatCycle, setFloatCycle] = useState(0);
+
   const [isPromoVideoMuted, setIsPromoVideoMuted] = useState(false);
   const [dataItemIndex, setDataItemIndex] = useState(0);
 
@@ -641,7 +648,28 @@ export const BroadcastStage: React.FC<BroadcastStageProps> = ({
   };
 
   // Latest 16 danmaku messages for full-screen floating overlay
-  const floatingDanmaku = danmakuList.slice(-16);
+  /**
+   * 大屏飘动弹幕：不再固定只取最新 16 条（那样老弹幕永远上不了屏，用户会以为被吞了），
+   * 改成滑动窗口轮播——每 14 秒（正好一个飘动周期）往前推 8 条，循环覆盖全部弹幕。
+   * 新弹幕仍会立刻进入窗口尾部，保证实时性。
+   */
+  // 每 14 秒推进一步，让下一批弹幕上屏
+  useEffect(() => {
+    if (!showDanmakuOverlay || danmakuList.length <= DANMAKU_FLOAT_WINDOW) return;
+    const timer = setInterval(() => setFloatCycle((c) => c + 1), 14000);
+    return () => clearInterval(timer);
+  }, [showDanmakuOverlay, danmakuList.length]);
+
+  const floatingDanmaku = useMemo(() => {
+    const total = danmakuList.length;
+    if (total === 0) return [];
+    const size = Math.min(DANMAKU_FLOAT_WINDOW, total);
+    if (total <= DANMAKU_FLOAT_WINDOW) return danmakuList;
+    const start = (floatCycle * DANMAKU_FLOAT_STEP) % total;
+    const out = [];
+    for (let i = 0; i < size; i++) out.push(danmakuList[(start + i) % total]);
+    return out;
+  }, [danmakuList, floatCycle]);
   const currentPromoItem = PROMO_VIDEO_SLOT[promoItemIndex] || PROMO_VIDEO_SLOT[0];
   // 一支宣传片可能被拆成多段，HUD 上按「第几支」显示而不是「第几段」
   const currentPromoGroupIndex = Math.max(
