@@ -1,24 +1,18 @@
-import React, { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Volume2,
   VolumeX,
   Play,
   Pause,
-  Calendar,
   SlidersHorizontal,
   EyeOff,
   SkipForward,
-  BarChart3,
+  Trophy,
 } from 'lucide-react';
 import { BroadcastStage } from './components/BroadcastStage';
 import { DanmakuPlugin } from './components/DanmakuPlugin';
-// 赛前数据面板依赖 recharts（约 400KB），改成按需加载：
-// 只有用户点「赛前数据统计」时才下载这个 chunk，首屏不受影响。
-const PreMatchStatsPanel = lazy(() =>
-  import('./components/PreMatchStatsPanel').then((m) => ({ default: m.PreMatchStatsPanel }))
-);
 import { PreloadGateScreen } from './components/PreloadGateScreen';
-import { HourlyVideoOverlay } from './components/HourlyVideoOverlay';
+import { VerticalIntroGate } from './components/VerticalIntroGate';
 import { BROADCAST_SLIDES } from './data/finalsData';
 import {
   calculateFinalsCountdown,
@@ -33,6 +27,8 @@ import {
   mergeDanmakuMessage,
   selectLeastCrowdedDanmakuLane,
   DANMAKU_LANE_COUNT,
+  DANMAKU_FONT_SIZE_DEFAULT_PX,
+  clampDanmakuFontSize,
 } from './utils/broadcastLogic';
 import {
   BGM_PLAYLIST,
@@ -49,29 +45,14 @@ import {
 } from './utils/supabaseDanmaku';
 import type { DanmakuMessage } from '../server';
 
-/**
- * 距决赛开赛剩余分钟数。
- * 调试用：?mockMinutes=N 可伪造剩余分钟数，用于验证 30/20 分钟两个阈值。
- */
-function resolveMinutesToFinals(nowMs: number): number {
-  if (typeof window !== 'undefined') {
-    const mock = new URLSearchParams(window.location.search).get('mockMinutes');
-    if (mock !== null && mock !== '') {
-      const n = Number(mock);
-      if (Number.isFinite(n)) return Math.max(0, Math.floor(n));
-    }
-  }
-  return Math.max(0, Math.floor((getFinalsTargetTimestamp() - nowMs) / 60000));
-}
+/** 弹幕数据来源：supabase（线上多人共享） / local（本地 ws 服务） */
+type DanmakuSource = 'supabase' | 'local';
 
-/** 0 秒倒计时（旗帜画面）锁定的专属战歌：Know My Name */
+/** 0 秒倒计时状态锁定的专属战歌：Know My Name */
 const KNOW_MY_NAME_TRACK_INDEX = Math.max(
   0,
   BGM_PLAYLIST.findIndex((t) => t.id === 'know-my-name')
 );
-
-/** 弹幕数据来源：supabase（线上多人共享） / local（本地 ws 服务） */
-type DanmakuSource = 'supabase' | 'local';
 
 export default function App() {
   // 游戏式进场前资源预加载门控（支持 ?skipPreload=1 快捷跳过）
@@ -83,89 +64,24 @@ export default function App() {
     return false;
   });
 
-  // 导播控制台「赛前数据统计」Recharts 面板开关
-  const [isPreMatchStatsOpen, setIsPreMatchStatsOpen] = useState<boolean>(false);
+  /** 首屏强制竖屏弹窗（YOU KNOW THEIR NAMES · BLG）是否已播完，播完才进入主页 */
+  const [isVerticalIntroDone, setIsVerticalIntroDone] = useState<boolean>(false);
 
-  // 0 秒开赛旗帜画面预览开关（真实倒计时归零时会自动激活；?zeroFlag=1 可直接预览）
-  const [isZeroFlagPreview, setIsZeroFlagPreview] = useState<boolean>(() => {
-    if (typeof window !== 'undefined') {
-      return new URLSearchParams(window.location.search).get('zeroFlag') === '1';
-    }
-    return false;
-  });
-  // 供只执行一次/回调类逻辑读取的旗帜模式标记
-  const isZeroFlagModeRef = useRef<boolean>(false);
-  // 进入旗帜模式前的曲目，用于预览退出后恢复
-  const prevTrackBeforeZeroRef = useRef<number | null>(null);
+  // 导播控制台「夺冠海报」切换控制（默认 'hide' 展示 BLG夺冠黄金之路主导播台，可手动切换 'show'）
+  const [zeroStageOverride, setZeroStageOverride] = useState<'auto' | 'show' | 'hide'>('hide');
 
-  // 每小时整点全屏播放「选人阶段加长版」（?hourly=1 可手动触发，便于调试）
-  const [isHourlyVideoOpen, setIsHourlyVideoOpen] = useState<boolean>(() => {
-    if (typeof window !== 'undefined') {
-      return new URLSearchParams(window.location.search).get('hourly') === '1';
-    }
-    return false;
-  });
-
-  // 调试用：?hourlyAfter=N 表示 N 秒后触发全屏长片，便于复现「宣传片播放中被长片打断」的场景
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const after = new URLSearchParams(window.location.search).get('hourlyAfter');
-    if (!after) return;
-    const delay = Math.max(1, Number(after) || 0) * 1000;
-    const timer = setTimeout(() => setIsHourlyVideoOpen(true), delay);
-    return () => clearTimeout(timer);
-  }, []);
-
-  // 调试用：?hourlyAfter=N 表示 N 秒后触发全屏长片，便于复现「宣传片播放中被长片打断」的场景
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const after = new URLSearchParams(window.location.search).get('hourlyAfter');
-    if (!after) return;
-    const delay = Math.max(1, Number(after) || 0) * 1000;
-    const timer = setTimeout(() => setIsHourlyVideoOpen(true), delay);
-    return () => clearTimeout(timer);
-  }, []);
-
-  /** 下一次整点的时间戳 */
-  const [nextHourlyAt, setNextHourlyAt] = useState<number>(() => {
-    const d = new Date();
-    d.setMinutes(0, 0, 0);
-    d.setHours(d.getHours() + 1);
-    return d.getTime();
-  });
-
-  // Real-time timestamp for Beijing Time Sunday Nov 15, 2026 03:00 AM Finals countdown
-  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  // Real-time timestamp for Finals clock reference
+  const [nowMs] = useState<number>(() => Date.now());
   // Align periodic slot clock to start at a 3-minute (03:00 = 180s) countdown on page load/refresh
-  const [slotClockOffsetMs, setSlotClockOffsetMs] = useState<number>(() => {
-    // 调试用：?slotFast=N 让「下一个插播触发点」提前到 N 秒后，便于验证 30 分钟抑制
-    if (typeof window !== 'undefined') {
-      const fast = new URLSearchParams(window.location.search).get('slotFast');
-      if (fast !== null && fast !== '') {
-        const sec = Math.max(1, Math.min(179, Number(fast) || 1));
-        const target = (180000 - sec * 1000) % 180000;
-        return target - (Date.now() % 180000);
-      }
-    }
-    return getInitialSlotClockOffsetMs(Date.now(), 180);
-  });
+  const [slotClockOffsetMs] = useState<number>(() =>
+    getInitialSlotClockOffsetMs(Date.now(), 180)
+  );
 
-  /**
-   * 全屏影片播放期间把「宣传片倒计时 / 赛事前瞻倒计时」冻结。
-   * 冻结时记住当时的 slot 时间戳，退出后把暂停的时长补进 slotClockOffsetMs，
-   * 这样倒计时是从暂停处继续，而不是被跳过。
-   */
-  const [hourlyFrozenSlotNow, setHourlyFrozenSlotNow] = useState<number | null>(null);
-  const hourlyFrozenSlotNowRef = useRef<number | null>(null);
-  /** 供只执行一次的 effect（首次点击解锁音频）读取最新值 */
-  const isHourlyVideoOpenRef = useRef(false);
-
-  // Broadcast media slot playback queue (handles single slot triggers & 45min/15min coincidence priority: promo_video -> data_preview)
+  // Broadcast media slot playback queue (handles single slot triggers & promo_video -> data_preview priority)
   const [slotQueue, setSlotQueue] = useState<BroadcastSlotQueueState>({
     activeSlot: null,
     pendingSlots: [],
   });
-  const lastTriggeredSecondRef = useRef<number>(-1);
 
   // Carousel state (12s interval with smooth static crossfade)
   const [activeSlideIndex, setActiveSlideIndex] = useState(0);
@@ -196,6 +112,10 @@ export default function App() {
   const isMutedRef = useRef(false);
   const slotQueueRef = useRef<BroadcastSlotId | null>(slotQueue.activeSlot);
   const prevSlotRef = useRef<BroadcastSlotId | null>(slotQueue.activeSlot);
+  const isZeroFlagModeRef = useRef<boolean>(false);
+  const prevTrackBeforeZeroRef = useRef<number | null>(null);
+  /** 竖屏开场片是否正在挡在主页前面（此期间背景音乐必须让位给片中原声） */
+  const introGateActiveRef = useRef(false);
 
   const currentTrack = BGM_PLAYLIST[trackIndex] || BGM_PLAYLIST[0];
 
@@ -276,47 +196,66 @@ export default function App() {
   const [danmakuList, setDanmakuList] = useState<DanmakuMessage[]>([
     {
       id: 'init-1',
-      text: 'BLG 冲啊！S16 总决赛为 LPL 捧杯！Knight 卓定天下！',
+      text: '恭喜 BLG 3:1 击败 GEN 勇夺 2026 英雄联盟全球总决赛冠军！为信念干杯！',
       author: 'LPL铁粉_阿泽',
       team: 'BLG',
-      color: '#00d2ff',
+      color: '#f5d5a7',
       timestamp: Date.now() - 90000,
       lane: 0,
-      likes: 88,
+      likes: 188,
     },
     {
       id: 'init-2',
-      text: 'GEN Golden Road! Chovy vs Knight 中路宿命对决太燃了！',
-      author: 'LCK_Watcher',
-      team: 'GEN',
-      color: '#f5b800',
+      text: '从十六强 HLE、八强 DK、四强 T1 到决赛 GEN，BLG 一穿四 LCK 铸就黄金之路！',
+      author: '峡谷金雨见证人',
+      team: 'BLG',
+      color: '#00d2ff',
       timestamp: Date.now() - 60000,
       lane: 1,
-      likes: 64,
+      likes: 164,
     },
     {
       id: 'init-3',
-      text: 'High Jump 这首 BP 战歌一响，世界赛决赛的压迫感直接拉满！',
-      author: '峡谷导播员',
-      team: 'NEUTRAL',
-      color: '#ffffff',
+      text: 'Knight 卓定天下！黄金左手与兄弟们捧起 2026 全球总决赛召唤师奖杯！',
+      author: '黄金左手护卫队',
+      team: 'BLG',
+      color: '#ff4d94',
       timestamp: Date.now() - 30000,
       lane: 2,
-      likes: 112,
+      likes: 152,
     },
     {
       id: 'init-4',
-      text: 'Bin 哥信誉分拉满！上路 Kiin vs Bin 绝对是火星撞地球！',
+      text: 'Bin / Xun / Knight / Viper / ON 首发五虎全勤出击，2026 全球总决赛登峰造极！',
       author: '陈泽彬粉丝',
       team: 'BLG',
-      color: '#ff4d94',
+      color: '#f5b800',
       timestamp: Date.now() - 15000,
       lane: 3,
-      likes: 95,
+      likes: 135,
     },
   ]);
   const [showDanmakuOverlay, setShowDanmakuOverlay] = useState(true);
   const [danmakuOpacity, setDanmakuOpacity] = useState(0.95);
+  const [danmakuFontSize, setDanmakuFontSize] = useState<number>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = window.localStorage.getItem('blg_s16_danmaku_font_size');
+      if (saved) {
+        return clampDanmakuFontSize(Number(saved));
+      }
+    }
+    return DANMAKU_FONT_SIZE_DEFAULT_PX;
+  });
+
+  const handleChangeDanmakuFontSize = useCallback((sizePx: number) => {
+    const clamped = clampDanmakuFontSize(sizePx);
+    setDanmakuFontSize(clamped);
+    try {
+      window.localStorage.setItem('blg_s16_danmaku_font_size', String(clamped));
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
 
   const danmakuSourceRef = useRef<DanmakuSource>('local');
   const reconnectDelayRef = useRef(3000);
@@ -325,6 +264,7 @@ export default function App() {
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const queueDanmaku = useCallback((msg: DanmakuMessage) => {
+    if (msg.team !== 'BLG') return;
     pendingDanmakuRef.current.push(msg);
     if (flushTimerRef.current) return;
     flushTimerRef.current = setTimeout(() => {
@@ -342,37 +282,7 @@ export default function App() {
     }, 400);
   }, []);
 
-  // 1-second tick for Beijing Time Sunday 03:00 Finals Countdown + Top-Right Dual Slot Countdowns
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const currentNow = Date.now();
-      setNowMs(currentNow);
-
-      // 全屏影片期间时钟冻结，不触发任何宣传片/前瞻
-      const currentSlotNow = hourlyFrozenSlotNow ?? currentNow + slotClockOffsetMs;
-      const currentSec = Math.floor(currentSlotNow / 1000);
-      if (currentSec !== lastTriggeredSecondRef.current) {
-        lastTriggeredSecondRef.current = currentSec;
-        const promoState = calculatePromoSlotCountdown(currentSlotNow);
-        const dataState = calculateDataPreviewSlotCountdown(currentSlotNow);
-
-        // 距开赛 30 分钟内停止自动插播：让画面稳定在倒计时/旗帜上
-        const minutesLeft = resolveMinutesToFinals(currentNow);
-        const suppressAutoSlots = minutesLeft <= 30;
-
-        const triggered: BroadcastSlotId[] = [];
-        if (!suppressAutoSlots) {
-          if (promoState.shouldTrigger) triggered.push('promo_video');
-          if (dataState.shouldTrigger) triggered.push('data_preview');
-        }
-
-        if (triggered.length > 0) {
-          setSlotQueue((prev) => enqueueBroadcastSlots(prev, triggered));
-        }
-      }
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [slotClockOffsetMs, hourlyFrozenSlotNow]);
+  // 所有倒计时已取消（不再按倒计时自动打断画面，宣传片与赛事前瞻仅通过右上角按钮手动点播）
 
   // Auto-advance broadcast right-window carousel every 12 seconds with smooth 500ms static crossfade
   useEffect(() => {
@@ -393,7 +303,6 @@ export default function App() {
     loadTrack(0, true);
 
     const handleEnded = () => {
-      // 0 秒开赛模式：单曲循环 Know My Name，不往下切
       if (isZeroFlagModeRef.current) {
         loadTrack(KNOW_MY_NAME_TRACK_INDEX, wantsPlayRef.current);
         return;
@@ -433,7 +342,7 @@ export default function App() {
           current.paused &&
           wantsPlayRef.current &&
           !isMutedRef.current &&
-          !isHourlyVideoOpenRef.current &&
+          !introGateActiveRef.current &&
           slotQueueRef.current !== 'promo_video'
         ) {
           current.play().catch(() => {});
@@ -452,6 +361,25 @@ export default function App() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /**
+   * 竖屏开场片（首次进入）挡在主页前面时，背景音乐必须让位：
+   * 否则观众会同时听到战歌和片中原声，完全听不清前导片在说什么。
+   * 片尾结束后再恢复战歌。
+   */
+  useEffect(() => {
+    const active = isPreloadComplete && !isVerticalIntroDone;
+    introGateActiveRef.current = active;
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (active) {
+      audio.pause();
+      return;
+    }
+    if (isPreloadComplete && wantsPlayRef.current && !isMutedRef.current && audio.paused) {
+      void audio.play().catch(() => {});
+    }
+  }, [isPreloadComplete, isVerticalIntroDone]);
 
   // Web Audio API 实时频谱采样循环（驱动 BGM 按钮内的 5 柱动态声波可视化）
   useEffect(() => {
@@ -516,12 +444,6 @@ export default function App() {
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
-    /**
-     * 全屏长片期间由 HourlyVideoOverlay 独占音频：
-     * 这里直接返回，任何 slot 变化都不处理，避免「换歌 + 播放」把战歌顶起来。
-     * （长片打开时也不会清空 slotQueue，退出后原页面原样还在）
-     */
-    if (isHourlyVideoOpen) return;
     const slot = slotQueue.activeSlot;
     const prev = prevSlotRef.current;
     if (slot === prev) return;
@@ -553,7 +475,7 @@ export default function App() {
       }
       loadTrack(nextIndex, wantsPlayRef.current && !isMutedRef.current);
     }
-  }, [slotQueue.activeSlot, loadTrack, isHourlyVideoOpen]);
+  }, [slotQueue.activeSlot, loadTrack]);
 
   const toggleBgmPlay = useCallback(() => {
     triggerBgmPulse();
@@ -581,7 +503,6 @@ export default function App() {
   const handleNextTrack = useCallback(() => {
     triggerBgmPulse();
     ensureAudioAnalyser();
-    // 0 秒开赛模式锁定战歌：点下一首也只会重播 Know My Name
     if (isZeroFlagModeRef.current) {
       wantsPlayRef.current = true;
       loadTrack(KNOW_MY_NAME_TRACK_INDEX, !isMutedRef.current);
@@ -694,7 +615,15 @@ export default function App() {
       if (rows) {
         danmakuSourceRef.current = 'supabase';
         setDanmakuSource('supabase');
-        if (rows.length > 0) setDanmakuList(rows);
+        if (rows.length > 0) {
+          setDanmakuList((prev) => {
+            let next = rows;
+            for (const seed of prev) {
+              next = mergeDanmakuMessage(next, seed, DANMAKU_MAX_ITEMS);
+            }
+            return next;
+          });
+        }
         unsubscribe = subscribeDanmaku({
           onInsert: queueDanmaku,
           onUpdate: queueDanmaku,
@@ -738,7 +667,12 @@ export default function App() {
           const data = JSON.parse(event.data);
           if (data.type === 'init') {
             if (danmakuSourceRef.current === 'local' && Array.isArray(data.danmaku)) {
-              setDanmakuList(data.danmaku);
+              const blgOnly = (data.danmaku as DanmakuMessage[]).filter(
+                (m) => m.team === 'BLG'
+              );
+              if (blgOnly.length > 0) {
+                setDanmakuList(blgOnly);
+              }
             }
             if (typeof data.onlineCount === 'number') setOnlineCount(data.onlineCount);
           } else if (data.type === 'danmaku:created' && data.message) {
@@ -892,98 +826,20 @@ export default function App() {
     setSlotQueue({ activeSlot: null, pendingSlots: [] });
   }, []);
 
-  // 到点自动弹出全屏影片；播完/退出后重新计算下一个整点
-  useEffect(() => {
-    const delay = nextHourlyAt - Date.now();
-    if (delay <= 0) {
-      const d = new Date();
-      d.setMinutes(0, 0, 0);
-      d.setHours(d.getHours() + 1);
-      setNextHourlyAt(d.getTime());
-      return;
-    }
-    const timer = setTimeout(() => {
-      setIsHourlyVideoOpen(true);
-      const d = new Date();
-      d.setMinutes(0, 0, 0);
-      d.setHours(d.getHours() + 1);
-      setNextHourlyAt(d.getTime());
-    }, delay);
-    return () => clearTimeout(timer);
-  }, [nextHourlyAt]);
-
-  // 全屏影片开始 → 冻结两个倒计时并清空正在播的 slot；结束 → 把暂停时长补回时钟
-  useEffect(() => {
-    if (isHourlyVideoOpen) {
-      const frozen = Date.now() + slotClockOffsetMs;
-      hourlyFrozenSlotNowRef.current = frozen;
-      setHourlyFrozenSlotNow(frozen);
-      /**
-       * 注意：这里**不能**清空 slotQueue。
-       * 一旦把 activeSlot 置空，BGM 的切页 effect 会看到 prev === 'promo_video'，
-       * 误判为「刚离开宣传片」→ 自动换一首歌并播放，于是全屏长片期间首页战歌突然响起。
-       * 保留 slot 状态即可：BroadcastStage 的视频已经被 isHourlyVideoActive 释放，
-       * 不会在后台抢解码器；退出后原页面原样还在。
-       */
-      return;
-    }
-    if (hourlyFrozenSlotNowRef.current !== null) {
-      // 让 slotNowMs 精确等于冻结值：offset = 冻结值 - 当前真实时间
-      // （不能用「累加暂停时长」，那会让倒计时多跳一个暂停时长）
-      setSlotClockOffsetMs(hourlyFrozenSlotNowRef.current - Date.now());
-      hourlyFrozenSlotNowRef.current = null;
-      setHourlyFrozenSlotNow(null);
-    }
-    // 只在开关变化时执行；slotClockOffsetMs 用闭包捕获的最新值即可
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isHourlyVideoOpen]);
-
-  // 把开关同步到 ref，供首次点击解锁音频的逻辑使用
-  useEffect(() => {
-    isHourlyVideoOpenRef.current = isHourlyVideoOpen;
-  }, [isHourlyVideoOpen]);
-
-  // 全屏影片期间让位给影片原声：暂停战歌，关闭后恢复
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    if (isHourlyVideoOpen) {
-      wantsPlayRef.current = false;
-      if (!audio.paused) audio.pause();
-      setIsBgmPlaying(false);
-    } else if (slotQueue.activeSlot !== 'promo_video' && !isMutedRef.current) {
-      // 退出长片后恢复战歌：
-      // 主页要恢复；赛事前瞻本来就有配乐，也要恢复；
-      // 只有宣传片例外——它有自己的原声，战歌必须保持安静。
-      wantsPlayRef.current = true;
-      audio.play().catch(() => {});
-    }
-  }, [isHourlyVideoOpen, slotQueue.activeSlot]);
-
   const isBgmActive = isBgmPlaying && slotQueue.activeSlot !== 'promo_video';
 
-  const slotNowMs = hourlyFrozenSlotNow ?? nowMs + slotClockOffsetMs;
+  const slotNowMs = nowMs + slotClockOffsetMs;
   const activeCountdown = calculateFinalsCountdown(nowMs, getFinalsTargetTimestamp());
   const promoCountdown = calculatePromoSlotCountdown(slotNowMs);
   const dataPreviewCountdown = calculateDataPreviewSlotCountdown(slotNowMs);
+  const isZeroFlagMode =
+    zeroStageOverride === 'show'
+      ? true
+      : zeroStageOverride === 'hide'
+      ? false
+      : activeCountdown.isZero;
 
-  /** 调试用：?mockZero=1 强制模拟"真实归零"（用于验证锁定态，预览态请用 ?zeroFlag=1） */
-  const isMockZero =
-    typeof window !== 'undefined' &&
-    new URLSearchParams(window.location.search).get('mockZero') === '1';
-
-  /** 0 秒开赛模式：倒计时真正归零，或手动开启预览 */
-  const isZeroFlagMode = activeCountdown.isZero || isZeroFlagPreview || isMockZero;
-
-  /** 距开赛剩余分钟数（用于 20 分钟内隐藏宣传片/前瞻入口；?mockMinutes=N 可伪造） */
-  const minutesToFinals = resolveMinutesToFinals(nowMs);
-
-  /**
-   * 进入 0 秒开赛模式时：
-   * - 关掉正在播的宣传片 / 赛事前瞻（画面让位给旗帜）
-   * - 把背景音乐锁定为 Know My Name 并强制播放
-   * 退出预览时恢复到进入前的曲目。
-   */
+  // 当倒计时变成 0 秒（或开启 0 秒开赛画面预览）时，自动关闭子插播页并将背景音乐锁定为 Know My Name
   useEffect(() => {
     const wasZero = isZeroFlagModeRef.current;
     isZeroFlagModeRef.current = isZeroFlagMode;
@@ -993,7 +849,10 @@ export default function App() {
       setSlotQueue({ activeSlot: null, pendingSlots: [] });
       ensureAudioAnalyser();
       wantsPlayRef.current = true;
-      if (trackIndexRef.current !== KNOW_MY_NAME_TRACK_INDEX || audioRef.current?.paused) {
+      if (
+        trackIndexRef.current !== KNOW_MY_NAME_TRACK_INDEX ||
+        audioRef.current?.paused
+      ) {
         loadTrack(KNOW_MY_NAME_TRACK_INDEX, !isMutedRef.current);
       }
     } else if (!isZeroFlagMode && wasZero && prevTrackBeforeZeroRef.current !== null) {
@@ -1008,9 +867,13 @@ export default function App() {
   return (
     <main
       id="broadcast-monitor"
-      className="min-h-screen md:h-screen w-full bg-[#000312] text-slate-100 flex flex-col md:items-center md:justify-center overflow-x-hidden md:overflow-hidden relative"
+      className="min-h-screen md:h-screen w-full bg-[#060504] text-slate-100 flex flex-col md:items-center md:justify-center overflow-x-hidden md:overflow-hidden relative"
     >
       {/* 游戏式进场前资源预加载门控界面 */}
+      {isPreloadComplete && !isVerticalIntroDone && (
+        <VerticalIntroGate onDone={() => setIsVerticalIntroDone(true)} />
+      )}
+
       {!isPreloadComplete && (
         <PreloadGateScreen
           onReady={() => setIsPreloadComplete(true)}
@@ -1022,15 +885,8 @@ export default function App() {
       {/* 单一音频元素：战歌顺序循环 */}
       <audio ref={audioRef} preload="auto" />
 
-      {/* 每小时整点全屏播放的选人阶段加长版（左上角保留决赛倒计时，右上角可退出） */}
-      <HourlyVideoOverlay
-        isOpen={isHourlyVideoOpen}
-        onClose={() => setIsHourlyVideoOpen(false)}
-        countdownDisplay={activeCountdown.primaryDisplay}
-      />
-
       {/* =====================================================================
-          PURE 16:9 BROADCAST WAITING SCREEN (GEN vs BLG · FINALS)
+          PURE 16:9 BROADCAST WAITING SCREEN (GEN vs BLG · GRAND FINAL)
           With smooth fade-in transition upon PreloadGateScreen completion
          ===================================================================== */}
       <div
@@ -1041,11 +897,6 @@ export default function App() {
       >
         <BroadcastStage
           countdown={activeCountdown}
-          isHourlyVideoActive={isHourlyVideoOpen}
-          isZeroFlagPreview={isZeroFlagPreview}
-          onExitZeroFlagPreview={() => setIsZeroFlagPreview(false)}
-          forceZero={isMockZero}
-          minutesToFinals={minutesToFinals}
           promoCountdown={promoCountdown}
           dataPreviewCountdown={dataPreviewCountdown}
           slotQueue={slotQueue}
@@ -1061,6 +912,10 @@ export default function App() {
           danmakuList={danmakuList}
           showDanmakuOverlay={showDanmakuOverlay}
           danmakuOpacity={danmakuOpacity}
+          danmakuFontSize={danmakuFontSize}
+          isZeroFlagPreview={isZeroFlagMode}
+          onExitZeroFlagPreview={() => setZeroStageOverride('hide')}
+          isHudMinimized={isHudMinimized}
         />
       </div>
 
@@ -1073,9 +928,9 @@ export default function App() {
           onClick={() => setIsHudMinimized(false)}
           title="展开导播控制台与弹幕条 (快捷键: H)"
           aria-label="展开导播控制台与弹幕条"
-          className="fixed bottom-3 left-3 z-40 inline-flex items-center gap-1.5 rounded-lg bg-[#03081c]/85 hover:bg-[#0051ff] border border-white/20 px-3 py-1.5 text-xs font-bold text-white backdrop-blur-md shadow-lg transition-colors cursor-pointer"
+          className="fixed bottom-3 left-3 z-40 inline-flex items-center gap-1.5 rounded-lg bg-[#120e09]/90 hover:bg-[#3b2e1e] border border-[#c8aa78]/40 px-3 py-1.5 text-xs font-bold text-[#f5d5a7] backdrop-blur-md shadow-lg transition-colors cursor-pointer"
         >
-          <SlidersHorizontal className="w-3.5 h-3.5 text-[#00d2ff]" />
+          <SlidersHorizontal className="w-3.5 h-3.5 text-[#f5d5a7]" />
           <span>导播台与弹幕 (H)</span>
         </button>
       ) : (
@@ -1083,23 +938,9 @@ export default function App() {
           aria-label="导播台悬浮控制栏与实时弹幕插件"
           className="w-full md:fixed md:bottom-2.5 md:left-3 md:right-3 z-[48] flex flex-col gap-1.5 px-2.5 py-2 md:p-0 pointer-events-none"
         >
-          {/* Recharts 赛前数据统计弹出面板（按需加载，未打开时不下载图表库） */}
-          {isPreMatchStatsOpen && (
-            <Suspense
-              fallback={
-                <div className="pointer-events-auto mb-2 flex items-center gap-2 rounded-xl border border-[#0051ff]/40 bg-[#03081c]/95 px-3 py-2 text-[11px] font-bold text-slate-300">
-                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/25 border-t-[#00d2ff]" />
-                  赛前数据加载中…
-                </div>
-              }
-            >
-              <PreMatchStatsPanel isOpen onClose={() => setIsPreMatchStatsOpen(false)} />
-            </Suspense>
-          )}
-
           <div className="flex flex-col xl:flex-row items-stretch xl:items-end justify-between gap-2">
-            {/* Left Pill: BGM Loop + Pre-Match Stats Toggle + Beijing Time Sunday 03:00 Finals Info */}
-            <div className="pointer-events-auto flex flex-wrap lg:flex-nowrap items-center gap-1.5 rounded-xl border border-[#0051ff]/40 bg-[#03081c]/90 backdrop-blur-md px-2.5 py-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.8)]">
+            {/* Left Pill: BGM Loop + BLG Champions Poster Toggle */}
+            <div className="pointer-events-auto flex flex-wrap lg:flex-nowrap items-center gap-1.5 rounded-xl border border-[#c8aa78]/40 bg-[#120e09]/92 backdrop-blur-md px-2.5 py-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.85)]">
               {/* BGM Play/Pause with Toggle Pulse, Dynamic Waveform Visualizer & Bottom Track Progress Bar */}
               <button
                 type="button"
@@ -1110,8 +951,8 @@ export default function App() {
                   isBgmBtnPulsing ? 'animate-control-pulse' : ''
                 } ${
                   isBgmActive
-                    ? 'bg-[#00d2ff] text-slate-950 shadow-[0_0_14px_rgba(0,210,255,0.4)]'
-                    : 'bg-[#0051ff] hover:bg-[#0066ff] text-white'
+                    ? 'bg-gradient-to-r from-[#d4b483] to-[#f5d5a7] text-[#14100a] shadow-[0_0_14px_rgba(245,213,167,0.35)]'
+                    : 'bg-[#2a2015] hover:bg-[#3b2e1e] text-[#f5d5a7] border border-[#c8aa78]/35'
                 }`}
               >
                 {isBgmActive ? (
@@ -1134,8 +975,8 @@ export default function App() {
                         style={{ height: `${heightPx}px` }}
                         className={`w-[2.5px] rounded-full transition-[height] duration-75 ${
                           isBgmActive && !isMuted
-                            ? 'bg-slate-950'
-                            : 'bg-white/45'
+                            ? 'bg-[#14100a]'
+                            : 'bg-[#f5d5a7]/50'
                         }`}
                       />
                     );
@@ -1159,20 +1000,25 @@ export default function App() {
                     style={{ width: `${bgmProgressPercent}%` }}
                     className={`block h-full transition-[width] duration-300 ${
                       isBgmActive
-                        ? 'bg-slate-950/85'
-                        : 'bg-gradient-to-r from-[#00d2ff] to-white'
+                        ? 'bg-[#14100a]/85'
+                        : 'bg-gradient-to-r from-[#d4b483] to-[#f5d5a7]'
                     }`}
                   />
                 </span>
               </button>
 
-              {/* Next Track */}
+              {/* Next Track (disabled when locked to Know My Name in Champions Poster mode) */}
               <button
                 type="button"
                 onClick={handleNextTrack}
-                aria-label="下一首战歌"
-                title="切到下一首战歌"
-                className="p-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-200 border border-white/10 shrink-0 cursor-pointer transition-transform active:scale-95"
+                disabled={isZeroFlagMode}
+                aria-label={isZeroFlagMode ? '夺冠海报模式已固定播放战歌 Know My Name' : '下一首战歌'}
+                title={isZeroFlagMode ? '夺冠海报画面已固定播放背景音乐 Know My Name' : '切到下一首战歌'}
+                className={`p-1 rounded-lg bg-[#1c160f] text-[#f5d5a7] border border-[#c8aa78]/25 shrink-0 transition-transform ${
+                  isZeroFlagMode
+                    ? 'opacity-45 cursor-not-allowed'
+                    : 'hover:bg-[#2b2217] cursor-pointer active:scale-95'
+                }`}
               >
                 <SkipForward className="w-3.5 h-3.5" />
               </button>
@@ -1184,14 +1030,14 @@ export default function App() {
                 onClick={toggleMute}
                 title={isMuted ? '取消静音 (快捷键: M)' : '静音背景音乐 (快捷键: M)'}
                 aria-label={isMuted ? '取消静音' : '静音背景音乐'}
-                className={`p-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-200 border border-white/10 shrink-0 cursor-pointer transition-all ${
-                  isVolumeBtnPulsing ? 'animate-control-pulse border-[#00d2ff]/70' : ''
+                className={`p-1 rounded-lg bg-[#1c160f] hover:bg-[#2b2217] text-slate-200 border border-[#c8aa78]/25 shrink-0 cursor-pointer transition-all ${
+                  isVolumeBtnPulsing ? 'animate-control-pulse border-[#f5d5a7]/80' : ''
                 }`}
               >
                 {isMuted ? (
                   <VolumeX className="w-3.5 h-3.5 text-rose-400" />
                 ) : (
-                  <Volume2 className="w-3.5 h-3.5 text-[#00d2ff]" />
+                  <Volume2 className="w-3.5 h-3.5 text-[#f5d5a7]" />
                 )}
               </button>
               <input
@@ -1202,32 +1048,40 @@ export default function App() {
                 step={0.05}
                 value={isMuted ? 0 : volume}
                 onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
-                className="w-14 accent-[#00d2ff] cursor-pointer hidden sm:block shrink-0"
+                className="w-14 accent-[#d4b483] cursor-pointer hidden sm:block shrink-0"
               />
 
-              <div className="h-4 w-[1px] bg-white/15 mx-0.5 hidden sm:block" />
+              <div className="h-4 w-[1px] bg-[#c8aa78]/25 mx-0.5 hidden sm:block" />
 
-              {/* Quick Toggle Button for Pre-Match Statistics Panel (Recharts) */}
+              {/* Quick Toggle Button for Full-Screen BLG Champions Poster + Golden Confetti */}
               <button
                 type="button"
-                data-testid="toggle-pre-match-stats-btn"
-                onClick={() => setIsPreMatchStatsOpen((prev) => !prev)}
-                aria-expanded={isPreMatchStatsOpen}
+                data-testid="toggle-zero-flag-preview-btn"
+                onClick={() => {
+                  const enteringChampionsStage = !isZeroFlagMode;
+                  setZeroStageOverride(enteringChampionsStage ? 'show' : 'hide');
+                  if (enteringChampionsStage) {
+                    ensureAudioAnalyser();
+                    wantsPlayRef.current = true;
+                    if (isMutedRef.current) {
+                      setIsMuted(false);
+                      isMutedRef.current = false;
+                      if (audioRef.current) audioRef.current.muted = false;
+                    }
+                    loadTrack(KNOW_MY_NAME_TRACK_INDEX, true);
+                  }
+                }}
+                aria-pressed={isZeroFlagMode}
+                title="切换全屏 BLG 夺冠海报与庆祝金色彩带动画（固定播放战歌 Know My Name）"
                 className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-extrabold border transition-all whitespace-nowrap shrink-0 cursor-pointer ${
-                  isPreMatchStatsOpen
-                    ? 'bg-[#f5b800] text-slate-950 border-[#f5b800] shadow-[0_0_14px_rgba(245,184,0,0.45)]'
-                    : 'bg-[#001861]/90 hover:bg-[#002b99] text-[#00d2ff] hover:text-white border-[#00d2ff]/45'
+                  isZeroFlagMode
+                    ? 'bg-gradient-to-r from-[#d4b483] to-[#f5d5a7] text-[#14100a] border-[#f5d5a7] shadow-[0_0_14px_rgba(245,213,167,0.55)]'
+                    : 'bg-[#1c160f]/95 hover:bg-[#2b2217] text-[#f5d5a7] hover:text-white border-[#c8aa78]/45'
                 }`}
               >
-                <BarChart3 className="w-3.5 h-3.5 shrink-0" />
-                <span>赛前数据统计</span>
+                <Trophy className="w-3.5 h-3.5 shrink-0" />
+                <span>{isZeroFlagMode ? '退出夺冠海报' : '夺冠海报'}</span>
               </button>
-
-              {/* Official Beijing Time Sunday 03:00 AM Finals Time Badge */}
-              <div className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-[#001861]/90 border border-[#0051ff]/50 text-[11px] font-bold text-white whitespace-nowrap shrink-0">
-                <Calendar className="w-3 h-3 text-[#00d2ff] shrink-0" />
-                <span>北京时间 11月15日 (周日) 03:00 决赛</span>
-              </div>
 
               {/* Hide HUD button for pure OBS feed */}
               <button
@@ -1235,7 +1089,7 @@ export default function App() {
                 onClick={() => setIsHudMinimized(true)}
                 title="隐藏底部控制台（纯净导播流模式）"
                 aria-label="隐藏底部控制台"
-                className="p-1 rounded-md bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white border border-white/10 cursor-pointer ml-auto sm:ml-0"
+                className="p-1 rounded-md bg-[#1c160f] hover:bg-[#2b2217] text-[#c8aa78] hover:text-white border border-[#c8aa78]/25 cursor-pointer ml-auto sm:ml-0"
               >
                 <EyeOff className="w-3.5 h-3.5" />
               </button>
@@ -1250,6 +1104,8 @@ export default function App() {
               onToggleDanmakuOverlay={() => setShowDanmakuOverlay((prev) => !prev)}
               danmakuOpacity={danmakuOpacity}
               onChangeDanmakuOpacity={setDanmakuOpacity}
+              danmakuFontSize={danmakuFontSize}
+              onChangeDanmakuFontSize={handleChangeDanmakuFontSize}
               onSendDanmaku={handleSendDanmaku}
               onLikeDanmaku={handleLikeDanmaku}
             />

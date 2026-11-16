@@ -1,25 +1,13 @@
 import React, { useEffect, useState, useRef } from 'react';
-import {
-  ShieldCheck,
-  Sparkles,
-  Loader2,
-  Play,
-  Film,
-  Image as ImageIcon,
-  Music,
-  Layers,
-  Volume2,
-  VolumeX,
-} from 'lucide-react';
+import { Play, Volume2, VolumeX } from 'lucide-react';
 import { BROADCAST_SLIDES } from '../data/finalsData';
 import {
-  MATCH_DATA_PREVIEW_SLOT,
   PROMO_VIDEO_SLOT,
   TRANSITION_STINGER_SLOT,
 } from '../data/broadcastSlots';
 import { BGM_PLAYLIST } from '../data/musicPlaylist';
 import { mediaUrl } from '../utils/mediaUrl';
-import { WorldsCrestLogo } from './TeamLogos';
+import { SummonersCupLoaderSvg } from './SummonersCupLoaderSvg';
 
 interface PreloadGateScreenProps {
   onReady: () => void;
@@ -33,6 +21,9 @@ interface PreloadTaskItem {
   category: 'stage' | 'carousel' | 'data' | 'video' | 'audio';
   run: () => Promise<void>;
 }
+
+/** BLG 2026 全球总决赛夺冠海报主视觉路径（原画 1920x1080 高清版） */
+const BLG_CHAMPIONS_POSTER_URL = 'assets/broadcast/blg_champions_2026_hd.jpg';
 
 /**
  * 预加载并解码单张图片（带超时保护，绝不阻塞死锁）
@@ -98,6 +89,18 @@ function prewarmMediaHeadBytes(url: string, byteLimit = 1048575, timeoutMs = 240
   });
 }
 
+/**
+ * 仪式感慢加载曲线：刻意放慢召唤师奖杯从纯灰底色 -> 冠军金色的注金过程，
+ * 让底座、杯身、双耳与冠冕的过渡层次清晰可见
+ */
+function computeCeremonialCupProgress(normalizedTime: number): number {
+  const t = Math.max(0, Math.min(1, normalizedTime));
+  // 分段节奏：底座注金(0~25%) -> 杯腰攀升(25~65%) -> 双耳与宝石点亮(65~90%) -> 冠冕满溢(90~100%)
+  const smooth = t * t * (3 - 2 * t);
+  const blended = 0.65 * t + 0.35 * smooth;
+  return Math.min(100, Math.round(blended * 100));
+}
+
 export const PreloadGateScreen: React.FC<PreloadGateScreenProps> = ({
   onReady,
   audioEnabled,
@@ -106,17 +109,14 @@ export const PreloadGateScreen: React.FC<PreloadGateScreenProps> = ({
   const [progress, setProgress] = useState(0);
   const [completedCount, setCompletedCount] = useState(0);
   const [totalCount, setTotalCount] = useState(1);
-  const [currentAssetLabel, setCurrentAssetLabel] = useState('正在初始化 S16 总决赛导播台资源引擎...');
-  const [categoryDone, setCategoryDone] = useState<Record<string, boolean>>({
-    stage: false,
-    carousel: false,
-    data: false,
-    video: false,
-    audio: false,
-  });
+  const [currentAssetLabel, setCurrentAssetLabel] = useState(
+    '正在为召唤师奖杯注入冠军金辉...'
+  );
   const [isExiting, setIsExiting] = useState(false);
   const [isAudioBtnPulsing, setIsAudioBtnPulsing] = useState(false);
   const completedRef = useRef(false);
+  const realProgressRef = useRef(0);
+  const realAssetsDoneRef = useRef(false);
 
   const handleAudioToggleClick = () => {
     setIsAudioBtnPulsing(true);
@@ -124,54 +124,52 @@ export const PreloadGateScreen: React.FC<PreloadGateScreenProps> = ({
     setTimeout(() => setIsAudioBtnPulsing(false), 450);
   };
 
-  const finishPreload = () => {
+  const finishPreload = (immediate = false) => {
     if (completedRef.current) return;
     completedRef.current = true;
     setProgress(100);
-    setIsExiting(true);
+    // 慢加载完成后额外驻留约 950ms，让观众充分欣赏召唤师奖杯被冠军金色完全点亮的瞬间；手动点击“立即进入”则快速响应
+    const holdGoldMs = immediate ? 120 : 950;
+    const fadeOutMs = immediate ? 260 : 480;
     setTimeout(() => {
-      onReady();
-    }, 280);
+      setIsExiting(true);
+      setTimeout(() => {
+        onReady();
+      }, fadeOutMs);
+    }, holdGoldMs);
   };
 
   useEffect(() => {
     let cancelled = false;
+    const params =
+      typeof window !== 'undefined'
+        ? new URLSearchParams(window.location.search)
+        : new URLSearchParams();
+    const holdPreload = params.get('holdPreload') === '1';
+    const fixedProgressParam = params.get('preloadProgress');
+    const fixedProgress =
+      fixedProgressParam !== null ? Math.min(100, Math.max(0, Number(fixedProgressParam))) : null;
 
-    // 构建分级预加载任务队列
     const tasks: PreloadTaskItem[] = [];
 
-    // 1. 主舞台核心底板与徽章
+    // 1. 主舞台核心底板与夺冠海报
     const stageImages = [
+      BLG_CHAMPIONS_POSTER_URL,
       'assets/broadcast/master_stage_base.jpg',
-      'assets/broadcast/gen_vs_blg_panel.jpg',
       'assets/broadcast/ribbon_bar.png',
-      'assets/logos/finals_stage.png',
       'assets/logos/worlds_26_bottom.png',
-      'assets/logos/partner_hyperx.png',
       'assets/logos/partner_riot.png',
-      'assets/logos/partner_aws.png',
-      'assets/logos/partner_redbull.png',
     ];
     stageImages.forEach((src, i) => {
       tasks.push({
         id: `stage-${i}`,
-        label: `主舞台底板与徽章 (${i + 1}/${stageImages.length})`,
+        label: `主舞台底板与冠军视觉 (${i + 1}/${stageImages.length})`,
         category: 'stage',
         run: () => preloadImageAsset(src, 1800),
       });
     });
 
-    // 2. 赛事前瞻全量 1080p 图例（含更新后的赛事前瞻8：BLG VS LCK IN BO5）
-    MATCH_DATA_PREVIEW_SLOT.forEach((item, i) => {
-      tasks.push({
-        id: `data-${item.id}`,
-        label: `预解码赛事前瞻图例：${item.title} (${i + 1}/${MATCH_DATA_PREVIEW_SLOT.length})`,
-        category: 'data',
-        run: () => preloadImageAsset(item.graphicImageUrl, 2000),
-      });
-    });
-
-    // 3. 右侧导播小窗轮播图队列（含轮播2与赛事前瞻8）
+    // 2. 右侧导播小窗 BLG 夺冠轮播图队列
     BROADCAST_SLIDES.forEach((slide, i) => {
       tasks.push({
         id: `slide-${slide.id}`,
@@ -195,10 +193,18 @@ export const PreloadGateScreen: React.FC<PreloadGateScreenProps> = ({
     });
 
     const criticalVideos = [
-      { url: TRANSITION_STINGER_SLOT.stingerVideoUrl, name: '召唤师徽章 4s-5s 转场动画', bytes: 1572864 },
-      { url: 'assets/broadcast/gen_vs_blg_loop.mp4', name: 'GEN vs BLG 左屏动态背景', bytes: 557168 },
-      { url: mediaUrl(PROMO_VIDEO_SLOT[0]?.videoUrl || 'assets/broadcast/promo_opening_from_2s.mp4'), name: '全球总决赛宣传片片头', bytes: 1048575 },
-      { url: mediaUrl(PROMO_VIDEO_SLOT[1]?.videoUrl || 'assets/aistudio/promo1_p1.mp4'), name: '第一支宣传片首段缓冲流', bytes: 1048575 },
+      {
+        url: TRANSITION_STINGER_SLOT.stingerVideoUrl,
+        name: '召唤师徽章 4s-5s 转场动画',
+        bytes: 1572864,
+      },
+      {
+        url: mediaUrl(
+          PROMO_VIDEO_SLOT[0]?.videoUrl || 'assets/aistudio/promo1_p1.mp4'
+        ),
+        name: '第一支宣传片首段缓冲流',
+        bytes: 1048575,
+      },
     ];
     criticalVideos.forEach((vid, i) => {
       tasks.push({
@@ -221,16 +227,8 @@ export const PreloadGateScreen: React.FC<PreloadGateScreenProps> = ({
 
     setTotalCount(tasks.length);
 
-    // 并发池执行（6 路并发，既快又不会打满浏览器连接池）
     let finished = 0;
     let cursor = 0;
-    const categoryRemaining: Record<string, number> = {
-      stage: tasks.filter((t) => t.category === 'stage').length,
-      carousel: tasks.filter((t) => t.category === 'carousel').length,
-      data: tasks.filter((t) => t.category === 'data').length,
-      video: tasks.filter((t) => t.category === 'video').length,
-      audio: tasks.filter((t) => t.category === 'audio').length,
-    };
 
     const worker = async () => {
       while (cursor < tasks.length && !cancelled && !completedRef.current) {
@@ -240,162 +238,107 @@ export const PreloadGateScreen: React.FC<PreloadGateScreenProps> = ({
         await task.run();
         if (cancelled || completedRef.current) break;
         finished += 1;
-        categoryRemaining[task.category] = Math.max(0, (categoryRemaining[task.category] || 1) - 1);
-        if (categoryRemaining[task.category] === 0) {
-          setCategoryDone((prev) => ({ ...prev, [task.category]: true }));
-        }
         setCompletedCount(finished);
-        setProgress(Math.min(100, Math.round((finished / tasks.length) * 100)));
+        realProgressRef.current = Math.min(100, Math.round((finished / tasks.length) * 100));
       }
     };
 
     const concurrency = 6;
     Promise.all(Array.from({ length: concurrency }, () => worker())).then(() => {
       if (!cancelled) {
-        setCurrentAssetLabel('全部导播台核心资源预热完毕，即将切入主舞台...');
-        finishPreload();
+        realProgressRef.current = 100;
+        realAssetsDoneRef.current = true;
+        setCurrentAssetLabel('召唤师奖杯充能完毕 · 恭喜 BLG 获得 2026 英雄联盟全球总决赛冠军！');
       }
     });
 
-    // 最长 4.2 秒兜底进场，确保弱网下也不会把观众永久卡在门外
-    const safetyTimer = setTimeout(() => {
-      if (!cancelled) {
-        finishPreload();
+    // 主动设置仪式感慢加载（约 6.8 秒从 0% 缓慢攀升至 100%），确保观众能细腻欣赏到纯灰底色召唤师奖杯逐步注满冠军金色的巧思
+    const startTime = performance.now();
+    const minFillDurationMs = 6800;
+    let rafId = 0;
+
+    const tickProgress = (now: number) => {
+      if (cancelled || completedRef.current) return;
+      if (fixedProgress !== null && !Number.isNaN(fixedProgress)) {
+        setProgress(Math.round(fixedProgress));
+        return;
       }
-    }, 4200);
+      const elapsed = now - startTime;
+      const ceremonialProgress = computeCeremonialCupProgress(elapsed / minFillDurationMs);
+      // 即使静态资源瞬间缓存完毕，也严格遵循慢加载曲线缓缓推进奖杯注金进度
+      const effectiveRealFloor = Math.max(realProgressRef.current, ceremonialProgress);
+      const nextVisual = Math.min(effectiveRealFloor, ceremonialProgress);
+      setProgress(nextVisual);
+
+      if (realAssetsDoneRef.current && nextVisual >= 100) {
+        if (!holdPreload) {
+          finishPreload(false);
+        }
+        return;
+      }
+      rafId = requestAnimationFrame(tickProgress);
+    };
+
+    rafId = requestAnimationFrame(tickProgress);
+
+    // 兜底进场保护（10.5 秒），既保证完整的慢加载观赏时长，也确保极端弱网下不会死锁
+    const safetyTimer = setTimeout(() => {
+      if (!cancelled && !holdPreload) {
+        finishPreload(false);
+      }
+    }, 10500);
 
     return () => {
       cancelled = true;
+      cancelAnimationFrame(rafId);
       clearTimeout(safetyTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const subsystems = [
-    { key: 'stage', label: '主舞台底板', icon: Layers },
-    { key: 'data', label: '赛事前瞻图例', icon: ImageIcon },
-    { key: 'carousel', label: '导播轮播画幅', icon: Sparkles },
-    { key: 'video', label: '转场与宣传片流', icon: Film },
-    { key: 'audio', label: 'BP 战歌音轨', icon: Music },
-  ];
-
   return (
     <div
       data-testid="preload-gate-screen"
-      className={`fixed inset-0 z-[100] flex flex-col items-center justify-between bg-[#000418] text-white px-6 py-8 select-none transition-opacity duration-300 ${
+      className={`fixed inset-0 z-[100] flex items-center justify-center bg-[#020826] text-white overflow-hidden select-none transition-opacity duration-300 ${
         isExiting ? 'opacity-0 pointer-events-none' : 'opacity-100'
       }`}
     >
-      {/* Ambient Broadcast Glow */}
-      <div
+      {/* 1. 超宽屏环境氛围背光层（确保在任何比例屏幕下无黑边） */}
+      <img
+        src={BLG_CHAMPIONS_POSTER_URL}
+        alt=""
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_35%,rgba(0,81,255,0.28),transparent_65%)]"
+        className="pointer-events-none absolute inset-0 w-full h-full object-cover blur-2xl scale-105 opacity-65"
       />
 
-      {/* Top Bar */}
-      <div className="relative z-10 w-full max-w-4xl flex items-center justify-between text-xs text-slate-400 border-b border-white/10 pb-3">
-        <div className="flex items-center gap-2">
-          <span className="inline-block w-2 h-2 rounded-full bg-[#00d2ff] animate-pulse" />
-          <span className="font-extrabold tracking-[0.2em] text-white uppercase">
-            WORLDS 2026 GRAND FINALS · BROADCAST ENGINE PRELOADER
-          </span>
-        </div>
-        <span className="font-mono text-[#00d2ff]">GEN vs BLG · BO5</span>
-      </div>
+      {/* 2. 主视觉：BLG 2026 全球总决赛夺冠海报（完整展示全员、奖杯、恭喜BLG夺冠字样与底部选手名条） */}
+      <div className="relative w-full h-full flex items-center justify-center">
+        <img
+          data-testid="preload-champions-poster"
+          src={BLG_CHAMPIONS_POSTER_URL}
+          alt="恭喜BLG获得2026英雄联盟全球总决赛冠军"
+          className="w-full h-full object-contain md:object-cover object-center pointer-events-none select-none"
+        />
 
-      {/* Center Hero Lockup */}
-      <div className="relative z-10 flex flex-col items-center text-center max-w-2xl my-auto py-6">
-        <div className="relative mb-5 flex items-center justify-center">
-          <div className="absolute -inset-6 rounded-full bg-[#00d2ff]/15 blur-2xl" />
-          <WorldsCrestLogo className="w-20 h-20 sm:w-24 sm:h-24 text-white drop-shadow-[0_0_25px_rgba(0,210,255,0.6)]" />
-        </div>
+        {/* 底部柔和暗角衬底，自然承接正中下方的召唤师奖杯与底部选手名条 */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-24 sm:h-28 bg-gradient-to-t from-[#01061e]/90 via-[#020a30]/40 to-transparent"
+        />
 
-        <div className="px-3 py-1 rounded-full bg-[#0051ff]/30 border border-[#00d2ff]/40 text-[11px] font-extrabold tracking-[0.25em] text-[#00d2ff] uppercase mb-3">
-          THIS IS OUR MOMENT · 赛前导播资源预加载
-        </div>
-
-        <h1 className="text-2xl sm:text-4xl font-black tracking-wider text-white uppercase drop-shadow-[0_4px_16px_rgba(0,0,0,0.9)]">
-          GEN.G <span className="text-[#00d2ff] mx-2">VS</span> BILIBILI GAMING
-        </h1>
-        <p className="mt-2 text-xs sm:text-sm text-slate-300 max-w-lg">
-          正在提前将高清主舞台底板、8 张赛事前瞻数据图例、轮播画幅、转场动画及宣传片首段缓冲至显存与本地缓存，确保导播切换零卡顿
-        </p>
-
-        {/* Progress Bar Card */}
-        <div className="mt-7 w-full rounded-2xl border border-[#0051ff]/50 bg-[#030926]/90 backdrop-blur-xl p-5 shadow-[0_20px_60px_rgba(0,0,0,0.85)]">
-          <div className="flex items-baseline justify-between gap-4 mb-2">
-            <div className="flex items-center gap-2 text-left min-w-0">
-              <Loader2 className="w-4 h-4 text-[#00d2ff] animate-spin shrink-0" />
-              <span
-                data-testid="preload-current-asset"
-                className="text-xs sm:text-sm font-bold text-slate-200 truncate"
-              >
-                {currentAssetLabel}
-              </span>
-            </div>
-            <div className="flex items-baseline gap-1.5 shrink-0">
-              <span
-                data-testid="preload-progress-percent"
-                className="font-broadcast-num text-2xl sm:text-3xl text-[#00d2ff] leading-none"
-              >
-                {progress}%
-              </span>
-              <span className="text-[11px] font-mono text-slate-400">
-                ({completedCount}/{totalCount})
-              </span>
-            </div>
-          </div>
-
-          {/* Track */}
-          <div className="w-full h-3 rounded-full bg-black/70 overflow-hidden border border-white/20 p-0.5">
-            <div
-              style={{ width: `${progress}%` }}
-              className="h-full rounded-full bg-gradient-to-r from-[#0051ff] via-[#00d2ff] to-white transition-all duration-200 shadow-[0_0_16px_rgba(0,210,255,0.8)]"
-            />
-          </div>
-
-          {/* 5 Subsystem Badges */}
-          <div className="mt-4 grid grid-cols-2 sm:grid-cols-5 gap-2">
-            {subsystems.map((sub) => {
-              const Icon = sub.icon;
-              const isDone = categoryDone[sub.key] || progress >= 100;
-              return (
-                <div
-                  key={sub.key}
-                  className={`flex items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 border text-[11px] font-bold transition-colors ${
-                    isDone
-                      ? 'bg-emerald-500/15 border-emerald-400/50 text-emerald-300'
-                      : 'bg-slate-900/80 border-white/10 text-slate-400'
-                  }`}
-                >
-                  {isDone ? (
-                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                  ) : (
-                    <Icon className="w-3.5 h-3.5 text-[#00d2ff] shrink-0" />
-                  )}
-                  <span className="truncate">{sub.label}</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      {/* Bottom Action Bar */}
-      <div className="relative z-10 w-full max-w-4xl flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-white/10 text-xs text-slate-400">
-        <span>提示：预加载完成后将自动进入 S16 冠亚军决赛实时导播画面（可随时预设进场声音状态）</span>
-        <div className="flex flex-wrap items-center gap-2.5">
+        {/* 3. 右下角空白区轻量快捷控制组（位于 FLANDRE 上方空白渐变处，不遮挡任何文字与人物） */}
+        <div className="absolute bottom-11 right-3 sm:bottom-12 sm:right-6 z-20 flex items-center gap-2">
           <button
             type="button"
             data-testid="preload-audio-toggle-btn"
             onClick={handleAudioToggleClick}
             aria-pressed={audioEnabled}
-            className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-extrabold transition-all cursor-pointer ${
+            className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-extrabold backdrop-blur-md transition-all cursor-pointer ${
               isAudioBtnPulsing ? 'animate-control-pulse' : ''
             } ${
               audioEnabled
-                ? 'bg-[#001861]/90 hover:bg-[#002b99] border-[#00d2ff]/55 text-[#00d2ff] shadow-[0_0_14px_rgba(0,210,255,0.28)]'
-                : 'bg-slate-900/90 hover:bg-slate-800 border-rose-500/45 text-rose-300'
+                ? 'bg-[#030b2e]/75 hover:bg-[#002b99]/90 border-[#00d2ff]/55 text-[#00d2ff] shadow-[0_0_14px_rgba(0,210,255,0.25)]'
+                : 'bg-slate-950/75 hover:bg-slate-900 border-rose-500/45 text-rose-300'
             }`}
           >
             {audioEnabled ? (
@@ -414,12 +357,54 @@ export const PreloadGateScreen: React.FC<PreloadGateScreenProps> = ({
           <button
             type="button"
             data-testid="enter-stage-now-btn"
-            onClick={finishPreload}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-[#0051ff] hover:bg-[#0066ff] border border-[#00d2ff]/50 px-4 py-2 text-xs font-extrabold text-white shadow-[0_0_20px_rgba(0,81,255,0.5)] transition-all cursor-pointer"
+            onClick={() => finishPreload(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-[#030b2e]/75 hover:bg-[#0051ff] border border-amber-300/50 px-3 py-1.5 text-[11px] font-extrabold text-amber-200 hover:text-white backdrop-blur-md shadow-[0_0_16px_rgba(245,184,0,0.25)] transition-all cursor-pointer"
           >
-            <Play className="w-3.5 h-3.5 fill-current" />
-            <span>立即进入导播台 ({progress}%)</span>
+            <Play className="w-3 h-3 fill-current" />
+            <span>立即进入</span>
           </button>
+        </div>
+
+        {/* 4. 海报正中下方：官方召唤师奖杯 SVG（纯灰底色 -> 冠军金色动态填充加载） */}
+        <div
+          data-testid="preload-summoners-cup-dock"
+          className="absolute bottom-1 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center pointer-events-none"
+        >
+          <div
+            className={`relative flex items-center justify-center transition-transform duration-500 ${
+              progress >= 100 ? 'scale-105' : 'scale-100'
+            }`}
+          >
+            <div
+              aria-hidden="true"
+              style={{ opacity: 0.2 + (progress / 100) * 0.78 }}
+              className="
+                absolute -inset-3 rounded-full
+                bg-[radial-gradient(circle,rgba(250,204,21,0.65)_0%,rgba(245,158,11,0.25)_58%,transparent_76%)]
+                blur-md transition-opacity duration-200
+              "
+            />
+            <SummonersCupLoaderSvg
+              progress={progress}
+              className="w-13 h-15 sm:w-15 sm:h-[4.35rem] md:w-[4.25rem] md:h-[4.9rem] drop-shadow-[0_4px_16px_rgba(0,0,0,0.95)]"
+            />
+          </div>
+
+          {/* 冠军金色进度数字（无边框纯净排版） */}
+          <span
+            data-testid="preload-progress-percent"
+            className={`mt-0.5 font-broadcast-num text-xs sm:text-sm leading-none tracking-widest transition-colors ${
+              progress >= 100
+                ? 'text-amber-300 drop-shadow-[0_0_12px_rgba(250,204,21,1)]'
+                : 'text-amber-200/90 drop-shadow-[0_2px_4px_rgba(0,0,0,0.95)]'
+            }`}
+          >
+            {progress}%
+          </span>
+
+          <span data-testid="preload-current-asset" className="sr-only">
+            {currentAssetLabel} ({completedCount}/{totalCount})
+          </span>
         </div>
       </div>
     </div>

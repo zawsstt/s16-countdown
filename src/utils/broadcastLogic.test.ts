@@ -182,3 +182,111 @@ test('computeVirtualizedDanmakuWindow renders only visible viewport slice plus o
   assert.equal(win.topSpacerPx, win.startIndex * 48);
   assert.equal(win.bottomSpacerPx, (120 - win.endIndex) * 48);
 });
+
+test('BLG_CHAMPIONSHIP_MATCHES includes all 4 matches from R16 HLE to GF GEN with BLG consistently on the right side and champions poster in BROADCAST_SLIDES', async () => {
+  const { BLG_CHAMPIONSHIP_MATCHES, BROADCAST_SLIDES } = await import('../data/finalsData');
+
+  assert.equal(BLG_CHAMPIONSHIP_MATCHES.length, 4);
+
+  // 1. R16 vs HLE (LCK #2, BO3, 0 - 2)
+  assert.equal(BLG_CHAMPIONSHIP_MATCHES[0].leftTeam.code, 'HLE');
+  assert.equal(BLG_CHAMPIONSHIP_MATCHES[0].leftTeam.seed, 'LCK #2');
+  assert.equal(BLG_CHAMPIONSHIP_MATCHES[0].format, 'BO3');
+  assert.equal(BLG_CHAMPIONSHIP_MATCHES[0].scoreText, '0 - 2');
+
+  // 2. QF vs DK (LCK #4, BO5, 0 - 3)
+  assert.equal(BLG_CHAMPIONSHIP_MATCHES[1].leftTeam.code, 'DK');
+  assert.equal(BLG_CHAMPIONSHIP_MATCHES[1].leftTeam.seed, 'LCK #4');
+  assert.equal(BLG_CHAMPIONSHIP_MATCHES[1].format, 'BO5');
+  assert.equal(BLG_CHAMPIONSHIP_MATCHES[1].scoreText, '0 - 3');
+
+  // 3. SF vs T1 (LCK #3, BO5, 1 - 3)
+  assert.equal(BLG_CHAMPIONSHIP_MATCHES[2].leftTeam.code, 'T1');
+  assert.equal(BLG_CHAMPIONSHIP_MATCHES[2].leftTeam.seed, 'LCK #3');
+  assert.equal(BLG_CHAMPIONSHIP_MATCHES[2].format, 'BO5');
+  assert.equal(BLG_CHAMPIONSHIP_MATCHES[2].scoreText, '1 - 3');
+
+  // 4. GF vs GEN (LCK #1, BO5, 1 - 3)
+  assert.equal(BLG_CHAMPIONSHIP_MATCHES[3].leftTeam.code, 'GEN');
+  assert.equal(BLG_CHAMPIONSHIP_MATCHES[3].leftTeam.seed, 'LCK #1');
+  assert.equal(BLG_CHAMPIONSHIP_MATCHES[3].format, 'BO5');
+  assert.equal(BLG_CHAMPIONSHIP_MATCHES[3].scoreText, '1 - 3');
+
+  // All 4 matches uniformly place LPL #2 BLG on the right side
+  for (const match of BLG_CHAMPIONSHIP_MATCHES) {
+    assert.equal(match.rightTeam.code, 'BLG');
+    assert.equal(match.rightTeam.seed, 'LPL #2');
+  }
+
+  // Champions poster is added to BROADCAST_SLIDES and all slides belong exclusively to BLG
+  assert.equal(BROADCAST_SLIDES[0].id, 'carousel-blg-champions-2026');
+  assert.equal(BROADCAST_SLIDES[0].imageUrl, 'assets/broadcast/blg_champions_2026_hd.jpg');
+  assert.ok(BROADCAST_SLIDES.length >= 6);
+  for (const slide of BROADCAST_SLIDES) {
+    assert.equal(slide.category, 'BLG');
+  }
+});
+
+test('PROMO_VIDEO_SLOT removes muted opening intro clip and keeps only unmuted promo groups', async () => {
+  const { PROMO_VIDEO_SLOT, PROMO_GROUP_IDS } = await import('../data/broadcastSlots');
+  assert.equal(PROMO_GROUP_IDS.length, 4);
+  for (const item of PROMO_VIDEO_SLOT) {
+    assert.notEqual(item.groupId, 'worlds-2026-promo-intro-bumper');
+    assert.ok(!item.muteAudio);
+  }
+});
+
+test('BlgTournamentDataPanel exports strictly verified starting 5 (no Flandre starter stats), 17 BO5 records vs LCK, and 10 AWS Power Rankings rows', async () => {
+  const {
+    VERIFIED_STARTING_FIVE,
+    VERIFIED_BLG_VS_LCK_BO5_LIST,
+    VERIFIED_AWS_POWER_RANKINGS,
+    VERIFIED_TRIOS_MILESTONES,
+  } = await import('../components/BlgTournamentDataPanel');
+
+  // 1. Exactly 5 starters: BIN, XUN, KNIGHT, VIPER, ON (Flandre did not play a single game)
+  assert.equal(VERIFIED_STARTING_FIVE.length, 5);
+  assert.deepEqual(
+    VERIFIED_STARTING_FIVE.map((p) => p.handle),
+    ['BIN', 'XUN', 'KNIGHT', 'VIPER', 'ON']
+  );
+
+  // 2. All 17 official BO5 matches against LCK from 2023 to 2026 (12 wins, 5 losses)
+  assert.equal(VERIFIED_BLG_VS_LCK_BO5_LIST.length, 17);
+  const wins = VERIFIED_BLG_VS_LCK_BO5_LIST.filter((r) => r.isWin).length;
+  const losses = VERIFIED_BLG_VS_LCK_BO5_LIST.filter((r) => !r.isWin).length;
+  assert.equal(wins, 12);
+  assert.equal(losses, 5);
+  assert.equal(VERIFIED_BLG_VS_LCK_BO5_LIST[0].eventStage, '2026 全球总决赛 决赛');
+  assert.equal(VERIFIED_BLG_VS_LCK_BO5_LIST[0].score, '3:1');
+  assert.equal(VERIFIED_BLG_VS_LCK_BO5_LIST[0].opponent, 'GEN');
+
+  // 3. Top 10 AWS Global Power Rankings rows matching official graphic ____2
+  assert.equal(VERIFIED_AWS_POWER_RANKINGS.length, 10);
+  assert.equal(VERIFIED_AWS_POWER_RANKINGS[0].team, 'BILIBILI GAMING');
+  assert.equal(VERIFIED_AWS_POWER_RANKINGS[0].wlBeforeFinals, '52-13');
+  assert.equal(VERIFIED_AWS_POWER_RANKINGS[0].points, 1578);
+
+  // 4. Trios United (BIN, XUN, ON): 2023 四强 -> 2024 亚军 -> 2026 冠军
+  assert.deepEqual(
+    VERIFIED_TRIOS_MILESTONES.map((m) => `${m.year}:${m.result}`),
+    ['2023:四强', '2024:亚军', '2026:冠军']
+  );
+});
+
+test('clampDanmakuFontSize clamps custom danmaku font size between 12px and 24px with default 14px', async () => {
+  const {
+    clampDanmakuFontSize,
+    DANMAKU_FONT_SIZE_DEFAULT_PX,
+    DANMAKU_FONT_SIZE_MIN_PX,
+    DANMAKU_FONT_SIZE_MAX_PX,
+  } = await import('./broadcastLogic');
+
+  assert.equal(DANMAKU_FONT_SIZE_DEFAULT_PX, 14);
+  assert.equal(clampDanmakuFontSize(8), DANMAKU_FONT_SIZE_MIN_PX);
+  assert.equal(clampDanmakuFontSize(30), DANMAKU_FONT_SIZE_MAX_PX);
+  assert.equal(clampDanmakuFontSize(17.4), 17);
+  assert.equal(clampDanmakuFontSize(Number.NaN), DANMAKU_FONT_SIZE_DEFAULT_PX);
+});
+
+

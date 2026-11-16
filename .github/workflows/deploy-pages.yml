@@ -57,6 +57,7 @@ jobs:
           concat promo1_full.mp4 promo1_p1.mp4 promo1_p2.mp4 promo1_p3.mp4 promo1_p4.mp4
           concat promo2_full.mp4 promo2_p1.mp4 promo2_p2.mp4 promo2_p3.mp4
           concat promo3_full.mp4 promo3_p1.mp4 promo3_p2.mp4 promo3_p3.mp4 promo3_p4.mp4
+          concat promo4_full.mp4 promo4_p1.mp4
           # 整片已生成，删掉片段避免重复打包（产物体积减半）
           rm -f promo*_p*.mp4
           echo "剩余视频："
@@ -68,7 +69,6 @@ jobs:
           VITE_SINGLE_PROMO_FILE: 'true'
 
       - uses: actions/configure-pages@v5
-
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

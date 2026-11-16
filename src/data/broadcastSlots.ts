@@ -68,19 +68,7 @@ export const TRANSITION_STINGER_SLOT: TransitionStingerSlotConfig = {
 /**
  * 宣传片倒计时播报列表（每 45 分钟自动触发一次）
  *
- * 播放顺序：
- *   开幕式预告片（原声，48s）→ 1.8s 黑屏 → 片头 → 正片1（4段）
- *   → 1.8s 黑屏 → 正片2（3段）→ 1.8s 黑屏 → 正片3（4段）
- *
- * 为什么要拆成多段：
- *   GitHub Pages 单文件上限 100MB，本可以直接放整片；但仓库历史里已经存了分段，
- *   再存一份整片会让仓库体积翻倍。所以仓库存片段，构建时用 ffmpeg -c copy 无损拼回整片。
- *   本地开发直接用片段（段间无缝续播），线上用整片（零接缝）。
- *
- * 其它加载要点：
- *   - 所有片段都是 +faststart（moov 索引前置），开头几百 KB 就能起播
- *   - 前端只在需要时才拉起下一段的缓冲，不会十几段一起抢带宽
- *   - 每段都有独立首帧海报，接缝处不会闪黑
+ * 播放顺序：片头 → 正片1（4段）→ 1.8s 黑屏 → 正片2（3段）→ 1.8s 黑屏 → 正片3（4段）→ 1.8s 黑屏 → 正片4（开幕式预告片，排在最后）
  */
 
 interface PromoGroupConfig {
@@ -104,22 +92,13 @@ interface PromoGroupConfig {
 
 const PROMO_GROUPS: PromoGroupConfig[] = [
   {
-    // 队列第一支：决赛开幕式预告片，带原声（不设 muteAudio）
-    id: 'promo-0',
-    title: 'WORLDS 2026 · 决赛开幕式预告片',
-    subtitle: 'FINAL OPENING CEREMONY · PRESENTED BY MASTERCARD',
-    parts: ['promo_opening_ceremony_2026.mp4'],
-    posters: ['poster_promo_opening_ceremony.jpg'],
-  },
-  {
-    id: 'intro',
-    title: 'WORLDS 2026 · 全球总决赛宣传片片头',
-    subtitle: 'RIOT GAMES × LOL ESPORTS OFFICIAL OPENING',
-    parts: [],
-    posters: [],
-    // 该片段原音轨录制失误（严重削波失真），已整轨移除，这里再强制静音兜底
-    muteAudio: true,
-    seamlessIntoNextGroup: true,
+    // 决赛前导片：宣传片队列首位
+    id: 'promo-0-history',
+    title: '書寫歷史之役 · 決賽前導片',
+    subtitle: 'WORLDS 2026 FINALS · OFFICIAL OPENING FILM',
+    parts: ['history_opening.mp4'],
+    whole: 'history_opening.mp4',
+    posters: ['poster_history_opening.jpg'],
   },
   {
     id: 'promo-1',
@@ -156,28 +135,22 @@ const PROMO_GROUPS: PromoGroupConfig[] = [
     ],
   },
   {
-    // 队列最后一支：2024 世界大赛总决赛 T1 vs BLG「創造信仰」
-    // 原始文件 65.8MB / 7分10秒 / 1080p，moov 在文件末尾，已无损重封装为 +faststart
     id: 'promo-4',
-    title: 'WORLDS 2024 · 創造信仰 · T1 vs BLG 总决赛',
-    subtitle: 'CREED · T1 VS BILIBILI GAMING · 2024 WORLD CHAMPIONSHIP FINAL',
-    parts: ['promo4_t1_vs_blg_2024.mp4'],
-    posters: ['poster_promo4_t1_vs_blg_2024.jpg'],
+    title: 'WORLDS 2026 · 冠亚军决赛开幕式宣传片',
+    subtitle: 'FINAL OPENING CEREMONY TRAILER · PRESENTED BY MASTERCARD',
+    parts: ['promo4_p1.mp4'],
+    whole: 'promo4_full.mp4',
+    posters: ['poster_promo4_p1.jpg'],
   },
 ];
 
-/** 片头是单独一段文件，不属于任何正片分组 */
-const INTRO_BUMPER_URL = 'assets/broadcast/promo_opening_from_2s.mp4';
-const INTRO_BUMPER_POSTER = 'assets/broadcast/poster_promo_opening.jpg';
-
 function buildPromoSlot(): PromoVideoSlotItem[] {
   const list: PromoVideoSlotItem[] = [];
+  const useSingleFile =
+    (import.meta as unknown as { env?: Record<string, string> }).env
+      ?.VITE_SINGLE_PROMO_FILE === 'true';
 
-  // 整片模式：VITE_SINGLE_PROMO_FILE=true 时用构建期无损拼接好的整片，零接缝（线上）
-  // 否则用分段（本地开发，段间用 seamlessNext 续播）
-  const useSingleFile = import.meta.env.VITE_SINGLE_PROMO_FILE === 'true';
-
-  const expandGroup = (group: PromoGroupConfig) => {
+  PROMO_GROUPS.forEach((group) => {
     const files = useSingleFile && group.whole ? [group.whole] : group.parts;
     files.forEach((part, pi) => {
       const isLastPart = pi === files.length - 1;
@@ -193,26 +166,7 @@ function buildPromoSlot(): PromoVideoSlotItem[] {
         muteAudio: group.muteAudio,
       });
     });
-  };
-
-  // 1. 开幕式预告片（队列第一位，默认原声播放）
-  expandGroup(PROMO_GROUPS[0]);
-
-  // 2. 片头引导短片（静音，播完直接接正片1，不插黑屏）
-  const introGroup = PROMO_GROUPS[1];
-  list.push({
-    id: 'worlds-2026-promo-intro-bumper',
-    title: introGroup.title,
-    subtitle: introGroup.subtitle,
-    videoUrl: INTRO_BUMPER_URL,
-    posterUrl: INTRO_BUMPER_POSTER,
-    groupId: introGroup.id,
-    seamlessNext: true,
-    muteAudio: true,
   });
-
-  // 3. 三支正片
-  PROMO_GROUPS.slice(2).forEach(expandGroup);
 
   return list;
 }
@@ -225,8 +179,8 @@ export const PROMO_GROUP_IDS: string[] = Array.from(
 );
 
 /**
- * 赛事前瞻倒计时播报列表（每 15 分钟自动触发）
- * 填充用户上传的 8 张官方 1080p 赛事数据图例（____1 ~ ____8）
+ * 赛事数据前瞻倒计时播报列表（每 15 分钟 :00 / :15 / :30 / :45 自动触发）
+ * 填充用户上传并更新后的 8 张官方 1080p 赛事数据图例（____1 ~ ____8）
  */
 export const MATCH_DATA_PREVIEW_SLOT: MatchDataPreviewSlotItem[] = [
   {

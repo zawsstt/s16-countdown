@@ -30,9 +30,7 @@ public/assets/aistudio/promo*_full.mp4
 # AI Studio 导出时的临时素材，代码未引用
 .aistudio/
 
-# 图片替换前的原始备份
-.backup/
+# 本地调试截图与临时备份（不进仓库）
 shot_*.png
-
-# 本地归档（体积大，不入库）
+.backup/
 release/

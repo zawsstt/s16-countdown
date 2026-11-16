@@ -473,3 +473,33 @@ export function computeVirtualizedDanmakuWindow(
     visibleCount: endIndex - startIndex,
   };
 }
+
+// ============================================================================
+// 弹幕字体大小优化与自由调节（Danmaku Font Size Customization）
+// ============================================================================
+
+export const DANMAKU_FONT_SIZE_MIN_PX = 12;
+export const DANMAKU_FONT_SIZE_MAX_PX = 24;
+export const DANMAKU_FONT_SIZE_DEFAULT_PX = 14;
+
+export const DANMAKU_FONT_SIZE_PRESETS: ReadonlyArray<{
+  label: string;
+  value: number;
+}> = [
+  { label: '紧凑', value: 12 },
+  { label: '标准', value: 14 },
+  { label: '较大', value: 17 },
+  { label: '特大', value: 20 },
+];
+
+/**
+ * 将用户设置的弹幕字号（px）限制在合法范围 [12, 24] 内并四舍五入为整数
+ */
+export function clampDanmakuFontSize(sizePx: number): number {
+  if (!Number.isFinite(sizePx)) return DANMAKU_FONT_SIZE_DEFAULT_PX;
+  return Math.min(
+    DANMAKU_FONT_SIZE_MAX_PX,
+    Math.max(DANMAKU_FONT_SIZE_MIN_PX, Math.round(sizePx))
+  );
+}
+

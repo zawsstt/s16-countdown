@@ -52,15 +52,27 @@ export function getSupabase(): SupabaseClient {
   return client;
 }
 
+function isBlgOnlyRow(row: DanmakuRow): boolean {
+  if (row.team && row.team !== 'BLG') return false;
+  const text = (row.text || '').toLowerCase();
+  if (
+    text.includes('gen golden road') ||
+    text.includes('我是中立') ||
+    text.includes('测试弹幕') ||
+    text.includes('我是本场解说')
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function rowToMessage(row: DanmakuRow): DanmakuMessage {
-  const team: DanmakuMessage['team'] =
-    row.team === 'GEN' || row.team === 'BLG' ? row.team : 'NEUTRAL';
   return {
     id: row.id,
     text: row.text,
-    author: row.author || '召唤师',
-    team,
-    color: row.color || (team === 'GEN' ? '#f5b800' : team === 'BLG' ? '#00d2ff' : '#ffffff'),
+    author: row.author || 'BLG助威召唤师',
+    team: 'BLG',
+    color: row.color || '#f5d5a7',
     timestamp: row.created_at ? Date.parse(row.created_at) : Date.now(),
     lane: typeof row.lane === 'number' ? row.lane : 0,
     likes: typeof row.likes === 'number' ? row.likes : 1,
@@ -68,7 +80,7 @@ function rowToMessage(row: DanmakuRow): DanmakuMessage {
 }
 
 /**
- * 拉取最近弹幕。
+ * 拉取最近弹幕（纪念站模式：仅保留 BLG 夺冠助威弹幕，过滤历史 GEN 及中立弹幕）。
  * @returns 成功返回按时间正序排列的数组（可能是空数组）；失败/未建表返回 null（调用方据此降级）
  */
 export async function fetchRecentDanmaku(limit = DANMAKU_FETCH_LIMIT): Promise<DanmakuMessage[] | null> {
@@ -76,11 +88,16 @@ export async function fetchRecentDanmaku(limit = DANMAKU_FETCH_LIMIT): Promise<D
     const { data, error } = await getSupabase()
       .from(DANMAKU_TABLE)
       .select('id,text,author,team,color,lane,likes,created_at')
+      .eq('team', 'BLG')
       .order('created_at', { ascending: false })
       .limit(limit);
 
     if (error || !data) return null;
-    return (data as DanmakuRow[]).slice().reverse().map(rowToMessage);
+    return (data as DanmakuRow[])
+      .filter(isBlgOnlyRow)
+      .slice()
+      .reverse()
+      .map(rowToMessage);
   } catch {
     return null;
   }
@@ -111,7 +128,9 @@ export function subscribeDanmaku(handlers: DanmakuSubscriptionHandlers): () => v
         { event: 'INSERT', schema: 'public', table: DANMAKU_TABLE },
         (payload) => {
           const row = payload.new as DanmakuRow;
-          if (row && row.id && row.text) handlers.onInsert(rowToMessage(row));
+          if (row && row.id && row.text && isBlgOnlyRow(row)) {
+            handlers.onInsert(rowToMessage(row));
+          }
         }
       )
       .on(
@@ -119,7 +138,9 @@ export function subscribeDanmaku(handlers: DanmakuSubscriptionHandlers): () => v
         { event: 'UPDATE', schema: 'public', table: DANMAKU_TABLE },
         (payload) => {
           const row = payload.new as DanmakuRow;
-          if (row && row.id) handlers.onUpdate(rowToMessage(row));
+          if (row && row.id && isBlgOnlyRow(row)) {
+            handlers.onUpdate(rowToMessage(row));
+          }
         }
       )
       .on('presence', { event: 'sync' }, () => {

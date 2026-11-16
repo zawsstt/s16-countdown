@@ -27,90 +27,70 @@ export interface CheerState {
 const initialDanmaku: DanmakuMessage[] = [
   {
     id: 'seed-1',
-    text: 'BLG 冲啊！S16 总决赛为 LPL 捧杯！Knight 卓定天下！',
+    text: '恭喜 BLG 夺得 2026 英雄联盟全球总决赛冠军！为信念干杯！',
     author: 'LPL铁粉_阿泽',
     team: 'BLG',
-    color: '#00d2ff',
+    color: '#f5d5a7',
     timestamp: Date.now() - 180000,
     lane: 0,
-    likes: 88,
+    likes: 188,
   },
   {
     id: 'seed-2',
-    text: 'GEN Golden Road! Chovy vs Knight 中路宿命对决太燃了！',
-    author: 'LCK_Watcher',
-    team: 'GEN',
-    color: '#f5b800',
+    text: '一穿四 LCK 夺冠！HLE、DK、T1、GEN 全斩于马下，历史第一含金量！',
+    author: 'Bilibili干杯',
+    team: 'BLG',
+    color: '#00d2ff',
     timestamp: Date.now() - 150000,
     lane: 1,
-    likes: 64,
+    likes: 164,
   },
   {
     id: 'seed-3',
-    text: 'High Jump 这首 BP 战歌一响，世界赛决赛的压迫感直接拉满！',
-    author: '峡谷导播员',
-    team: 'NEUTRAL',
-    color: '#ffffff',
+    text: '黄金左手 Knight 卓定乾坤！中路游龙捧起 2026 全球总决赛召唤师奖杯！',
+    author: '左手十年老粉',
+    team: 'BLG',
+    color: '#f5d5a7',
     timestamp: Date.now() - 120000,
     lane: 2,
-    likes: 112,
+    likes: 212,
   },
   {
     id: 'seed-4',
-    text: 'Bin 哥信誉分拉满！上路 Kiin vs Bin 绝对是火星撞地球！',
+    text: 'Bin 哥世一上信誉分拉满！Bin / Xun / ON 三人组三进世界赛四强终圆梦！',
     author: '陈泽彬唯一指定粉丝',
     team: 'BLG',
     color: '#ff4d94',
     timestamp: Date.now() - 95000,
     lane: 3,
-    likes: 95,
+    likes: 195,
   },
   {
     id: 'seed-5',
-    text: 'Ruler 尺帝重返世界赛决赛舞台，GEN 下路双人组太稳了！',
-    author: 'GenG_Tiger',
-    team: 'GEN',
-    color: '#f5b800',
+    text: 'Bin / Xun / Knight / Viper / ON 首发五虎全勤统治峡谷！BO5 对阵 LCK 12胜5负！',
+    author: 'BLG冠军应援团',
+    team: 'BLG',
+    color: '#00d2ff',
     timestamp: Date.now() - 70000,
     lane: 4,
-    likes: 57,
+    likes: 157,
   },
   {
     id: 'seed-6',
-    text: 'THIS IS OUR MOMENT! 坐等周日凌晨 BO5 打满五局听战歌！',
-    author: 'S16见证者',
-    team: 'NEUTRAL',
-    color: '#38bdf8',
-    timestamp: Date.now() - 45000,
-    lane: 0,
-    likes: 134,
-  },
-  {
-    id: 'seed-7',
-    text: '给 BLG 献上漫天弹幕！为 LPL 搏至无憾！',
-    author: 'Bilibili干杯',
+    text: '风起今朝，我们是冠军！BLG 黄金之路永载英雄联盟史册！',
+    author: 'S16夺冠见证者',
     team: 'BLG',
-    color: '#00d2ff',
-    timestamp: Date.now() - 20000,
-    lane: 2,
-    likes: 146,
-  },
-  {
-    id: 'seed-8',
-    text: 'Canyon 野核对决 Xun 千珏，谁能控下第一条大龙？',
-    author: '战术分析师',
-    team: 'NEUTRAL',
-    color: '#fbbf24',
-    timestamp: Date.now() - 8000,
-    lane: 1,
-    likes: 49,
+    color: '#f5d5a7',
+    timestamp: Date.now() - 35000,
+    lane: 0,
+    likes: 246,
   },
 ];
 
 let danmakuHistory: DanmakuMessage[] = [...initialDanmaku];
 const cheerState: CheerState = {
-  GEN: 14820,
-  BLG: 18650,
+  GEN: 0,
+  BLG: 28650,
 };
 
 async function startServer() {
@@ -157,14 +137,13 @@ async function startServer() {
           const id = String(data.id || `dm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
           if (danmakuHistory.some((m) => m.id === id)) return;
 
-          const team: 'GEN' | 'BLG' | 'NEUTRAL' =
-            data.team === 'GEN' || data.team === 'BLG' ? data.team : 'NEUTRAL';
+          const team: 'GEN' | 'BLG' | 'NEUTRAL' = 'BLG';
           const newMsg: DanmakuMessage = {
             id,
             text,
-            author: String(data.author || '召唤师').trim().slice(0, 24) || '召唤师',
+            author: String(data.author || 'BLG召唤师').trim().slice(0, 24) || 'BLG召唤师',
             team,
-            color: String(data.color || (team === 'GEN' ? '#f5b800' : team === 'BLG' ? '#00d2ff' : '#ffffff')),
+            color: String(data.color || '#f5d5a7'),
             timestamp: Date.now(),
             lane: typeof data.lane === 'number' ? Math.abs(data.lane) % 5 : Math.floor(Math.random() * 5),
             likes: 1,
@@ -175,8 +154,7 @@ async function startServer() {
             danmakuHistory = danmakuHistory.slice(-150);
           }
 
-          if (team === 'GEN') cheerState.GEN += 1;
-          if (team === 'BLG') cheerState.BLG += 1;
+          cheerState.BLG += 1;
 
           broadcast({
             type: 'danmaku:created',

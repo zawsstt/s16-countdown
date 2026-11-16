@@ -209,20 +209,20 @@ export const PreMatchStatsPanel: React.FC<PreMatchStatsPanelProps> = ({
     <aside
       data-testid="pre-match-stats-panel"
       aria-label="赛前数据统计面板"
-      className="pointer-events-auto w-full md:w-[780px] lg:w-[900px] max-w-[96vw] mb-2 md:mb-0 md:absolute md:bottom-12 md:left-0 z-50 rounded-2xl border border-[#00d2ff]/45 bg-[#03081c]/95 backdrop-blur-xl p-4 shadow-[0_20px_70px_rgba(0,0,0,0.92)] text-slate-100 animate-fadeIn"
+      className="pointer-events-auto w-full md:w-[780px] lg:w-[900px] max-w-[96vw] mb-2 md:mb-0 md:absolute md:bottom-12 md:left-0 z-50 rounded-2xl border border-[#c8aa78]/45 bg-[#120e09]/95 backdrop-blur-xl p-4 shadow-[0_20px_70px_rgba(0,0,0,0.95)] text-slate-100 animate-fadeIn"
     >
       {/* Header Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-white/10">
+      <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[#c8aa78]/20">
         <div className="flex items-center gap-2">
-          <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-[#0051ff]/30 border border-[#00d2ff]/50 text-[#00d2ff]">
+          <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-[#3b2e1e]/60 border border-[#f5d5a7]/50 text-[#f5d5a7]">
             <BarChart3 className="w-4 h-4" />
           </span>
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-sm font-black tracking-wide text-white uppercase">
+              <h2 className="text-sm font-black tracking-wide text-[#f5d5a7] uppercase">
                 赛前数据统计 · PRE-MATCH TELEMETRY
               </h2>
-              <span className="px-2 py-0.5 rounded bg-[#0051ff] text-[10px] font-extrabold text-white">
+              <span className="px-2 py-0.5 rounded bg-[#d4b483] text-[10px] font-extrabold text-[#14100a]">
                 AWS 战力榜同分 1578 #1
               </span>
             </div>
@@ -552,20 +552,20 @@ export const PreMatchStatsPanel: React.FC<PreMatchStatsPanelProps> = ({
       </div>
 
       {/* Bottom Verified Knockout Road & Milestone Strip */}
-      <div className="mt-3 pt-2.5 border-t border-white/10 flex flex-wrap items-center justify-between gap-1.5 text-[11px]">
+      <div className="mt-3 pt-2.5 border-t border-[#c8aa78]/20 flex flex-wrap items-center justify-between gap-1.5 text-[11px]">
         <div className="inline-flex items-center gap-1.5 text-slate-300 font-semibold">
-          <Trophy className="w-3.5 h-3.5 text-[#f5b800]" />
-          <span>2026 全球总决赛淘汰赛晋级之路：</span>
+          <Trophy className="w-3.5 h-3.5 text-[#f5d5a7]" />
+          <span>2026 全球总决赛晋级与夺冠之路：</span>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="px-2 py-0.5 rounded bg-[#f5b800]/15 border border-[#f5b800]/40 text-amber-300 font-extrabold">
             GEN：八强胜 LYON · 四强胜 IG
           </span>
-          <span className="px-2 py-0.5 rounded bg-[#00d2ff]/15 border border-[#00d2ff]/40 text-[#5ce1ff] font-extrabold">
-            BLG：八强 3:0 DK · 四强 3:1 T1
+          <span className="px-2 py-0.5 rounded bg-[#c8aa78]/15 border border-[#c8aa78]/40 text-[#f5d5a7] font-extrabold">
+            BLG：16强 2:0 HLE · 八强 3:0 DK · 四强 3:1 T1
           </span>
-          <span className="px-2.5 py-0.5 rounded bg-white text-slate-950 font-black tracking-wide">
-            冠亚军决赛：GEN VS BLG (待交手)
+          <span className="px-2.5 py-0.5 rounded bg-[#f5d5a7] text-[#14100a] font-black tracking-wide">
+            冠亚军决赛：GEN 1 : 3 BLG
           </span>
         </div>
       </div>
