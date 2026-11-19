@@ -104,6 +104,12 @@ export const BGM_PLAYLIST: BgmTrack[] = [
     subtitle: 'K/DA · ft. MIYEON & SOYEON of (G)I-DLE, Sophie Powers, Mimi Webb',
     url: 'assets/music/KDA_-_FIRESTARTER_ft._MIYEON_and_SOYEON_of_i-dle,_Sophie_Powers,_Mimi_Webb_(Official_Music_Video).mp3',
   },
+  {
+    id: 'mr-nobody',
+    title: 'MR. nobody',
+    subtitle: 'Jagwar Twin · BLG 夺冠海报固定战歌',
+    url: 'assets/music/Jagwar_Twin_-_MR._nobody.mp3',
+  },
 ];
 
 export const BGM_TRACK_COUNT = BGM_PLAYLIST.length;

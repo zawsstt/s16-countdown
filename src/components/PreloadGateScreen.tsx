@@ -10,7 +10,8 @@ import { mediaUrl } from '../utils/mediaUrl';
 import { SummonersCupLoaderSvg } from './SummonersCupLoaderSvg';
 
 interface PreloadGateScreenProps {
-  onReady: () => void;
+  /** 预加载完成：回传首屏竖屏开场片的本地 blob 地址（失败时为 undefined，退回网络地址） */
+  onReady: (introVideoUrl?: string) => void;
   audioEnabled: boolean;
   onToggleAudio: () => void;
 }
@@ -24,6 +25,47 @@ interface PreloadTaskItem {
 
 /** BLG 2026 全球总决赛夺冠海报主视觉路径（原画 1920x1080 高清版） */
 const BLG_CHAMPIONS_POSTER_URL = 'assets/broadcast/blg_champions_2026_hd.jpg';
+
+/** 首屏强制竖屏开场片（必须在进场前整段下载完，否则国内弱网会在视频页干等） */
+const INTRO_VIDEO_ASSET = 'assets/aistudio/blg_names_vertical.mp4';
+
+/** 下载停滞多久判定为「卡住」，直接放弃改用网络直连兜底 */
+const INTRO_VIDEO_STALL_MS = 25000;
+
+/**
+ * 带真实进度的整段下载：用 ReadableStream 数字节，
+ * 这样奖杯注金进度可以完全跟着下载进度走，而不是靠猜时间。
+ */
+async function downloadMediaWithProgress(
+  url: string,
+  onProgress: (ratio: number) => void,
+  signal: AbortSignal
+): Promise<Blob> {
+  const res = await fetch(url, { cache: 'force-cache', signal });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const total = Number(res.headers.get('content-length') || 0);
+
+  if (!res.body) {
+    const blob = await res.blob();
+    onProgress(1);
+    return blob;
+  }
+
+  const reader = res.body.getReader();
+  const chunks: BlobPart[] = [];
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      chunks.push(value as unknown as BlobPart);
+      received += value.length;
+      onProgress(total > 0 ? Math.min(1, received / total) : 0);
+    }
+  }
+  onProgress(1);
+  return new Blob(chunks, { type: 'video/mp4' });
+}
 
 /**
  * 预加载并解码单张图片（带超时保护，绝不阻塞死锁）
@@ -114,9 +156,17 @@ export const PreloadGateScreen: React.FC<PreloadGateScreenProps> = ({
   );
   const [isExiting, setIsExiting] = useState(false);
   const [isAudioBtnPulsing, setIsAudioBtnPulsing] = useState(false);
+  const [isIntroVideoReady, setIsIntroVideoReady] = useState(false);
+  const [introVideoPercent, setIntroVideoPercent] = useState(0);
   const completedRef = useRef(false);
   const realProgressRef = useRef(0);
   const realAssetsDoneRef = useRef(false);
+  /** 开场片整段下载进度 0~1，直接驱动奖杯注金 */
+  const introVideoProgressRef = useRef(0);
+  /** 开场片是否可以进入播放（下载完成 / 下载失败兜底） */
+  const introVideoReadyRef = useRef(false);
+  /** 下载完成后的本地 blob 地址，交给竖屏页秒开 */
+  const introVideoUrlRef = useRef<string | undefined>(undefined);
 
   const handleAudioToggleClick = () => {
     setIsAudioBtnPulsing(true);
@@ -134,7 +184,7 @@ export const PreloadGateScreen: React.FC<PreloadGateScreenProps> = ({
     setTimeout(() => {
       setIsExiting(true);
       setTimeout(() => {
-        onReady();
+        onReady(introVideoUrlRef.current);
       }, fadeOutMs);
     }, holdGoldMs);
   };
@@ -151,6 +201,44 @@ export const PreloadGateScreen: React.FC<PreloadGateScreenProps> = ({
       fixedProgressParam !== null ? Math.min(100, Math.max(0, Number(fixedProgressParam))) : null;
 
     const tasks: PreloadTaskItem[] = [];
+
+    // 0. 首屏竖屏开场片：整段下载（不是预热头部），下载完才允许进场播视频。
+    //    国内弱网下这一段往往是最慢的，所以直接拿它的真实进度驱动奖杯。
+    const introAbort = new AbortController();
+    let introLastProgressAt = Date.now();
+    let introLastRatio = 0;
+    tasks.push({
+      id: 'intro-video',
+      label: '预加载开场影片：YOU KNOW THEIR NAMES · BLG',
+      category: 'video',
+      run: () =>
+        downloadMediaWithProgress(
+          mediaUrl(INTRO_VIDEO_ASSET),
+          (ratio) => {
+            if (ratio > introLastRatio) {
+              introLastRatio = ratio;
+              introLastProgressAt = Date.now();
+            }
+            introVideoProgressRef.current = ratio;
+            setIntroVideoPercent(Math.round(ratio * 100));
+          },
+          introAbort.signal
+        )
+          .then((blob) => {
+            introVideoUrlRef.current = URL.createObjectURL(blob);
+            introVideoProgressRef.current = 1;
+            introVideoReadyRef.current = true;
+            setIsIntroVideoReady(true);
+            setIntroVideoPercent(100);
+          })
+          .catch(() => {
+            // 下载失败/中断：退化成直接播放网络地址，绝不把观众锁死在加载页
+            introVideoProgressRef.current = 1;
+            introVideoReadyRef.current = true;
+            setIsIntroVideoReady(true);
+            setIntroVideoPercent(100);
+          }),
+    });
 
     // 1. 主舞台核心底板与夺冠海报
     const stageImages = [
@@ -265,12 +353,23 @@ export const PreloadGateScreen: React.FC<PreloadGateScreenProps> = ({
       }
       const elapsed = now - startTime;
       const ceremonialProgress = computeCeremonialCupProgress(elapsed / minFillDurationMs);
-      // 即使静态资源瞬间缓存完毕，也严格遵循慢加载曲线缓缓推进奖杯注金进度
-      const effectiveRealFloor = Math.max(realProgressRef.current, ceremonialProgress);
-      const nextVisual = Math.min(effectiveRealFloor, ceremonialProgress);
+
+      // 开场片下载卡住（长时间没有新字节）就放弃整段下载，退回网络直连
+      if (!introVideoReadyRef.current && now - introLastProgressAt > INTRO_VIDEO_STALL_MS) {
+        introAbort.abort();
+      }
+
+      // 奖杯注金 = min(仪式感曲线, 开场片真实下载进度)
+      // 视频没下完，奖杯就永远差最后那一截 —— 绝不会在视频没就绪时把人放进去
+      const videoPct = Math.round(introVideoProgressRef.current * 100);
+      const nextVisual = Math.min(ceremonialProgress, videoPct);
       setProgress(nextVisual);
 
-      if (realAssetsDoneRef.current && nextVisual >= 100) {
+      if (
+        realAssetsDoneRef.current &&
+        introVideoReadyRef.current &&
+        nextVisual >= 100
+      ) {
         if (!holdPreload) {
           finishPreload(false);
         }
@@ -281,17 +380,10 @@ export const PreloadGateScreen: React.FC<PreloadGateScreenProps> = ({
 
     rafId = requestAnimationFrame(tickProgress);
 
-    // 兜底进场保护（10.5 秒），既保证完整的慢加载观赏时长，也确保极端弱网下不会死锁
-    const safetyTimer = setTimeout(() => {
-      if (!cancelled && !holdPreload) {
-        finishPreload(false);
-      }
-    }, 10500);
-
     return () => {
       cancelled = true;
+      introAbort.abort();
       cancelAnimationFrame(rafId);
-      clearTimeout(safetyTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -357,18 +449,23 @@ export const PreloadGateScreen: React.FC<PreloadGateScreenProps> = ({
           <button
             type="button"
             data-testid="enter-stage-now-btn"
+            disabled={!isIntroVideoReady}
             onClick={() => finishPreload(true)}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-[#030b2e]/75 hover:bg-[#0051ff] border border-amber-300/50 px-3 py-1.5 text-[11px] font-extrabold text-amber-200 hover:text-white backdrop-blur-md shadow-[0_0_16px_rgba(245,184,0,0.25)] transition-all cursor-pointer"
+            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[11px] font-extrabold backdrop-blur-md transition-all ${
+              isIntroVideoReady
+                ? 'bg-[#030b2e]/75 hover:bg-[#0051ff] border-amber-300/50 text-amber-200 hover:text-white shadow-[0_0_16px_rgba(245,184,0,0.25)] cursor-pointer'
+                : 'bg-[#030b2e]/50 border-white/20 text-white/45 cursor-not-allowed'
+            }`}
           >
             <Play className="w-3 h-3 fill-current" />
-            <span>立即进入</span>
+            <span>{isIntroVideoReady ? '立即进入' : '开场影片加载中…'}</span>
           </button>
         </div>
 
         {/* 4. 海报正中下方：官方召唤师奖杯 SVG（纯灰底色 -> 冠军金色动态填充加载） */}
         <div
           data-testid="preload-summoners-cup-dock"
-          className="absolute bottom-1 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center pointer-events-none"
+          className="absolute bottom-2.5 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center pointer-events-none"
         >
           <div
             className={`relative flex items-center justify-center transition-transform duration-500 ${
@@ -405,6 +502,16 @@ export const PreloadGateScreen: React.FC<PreloadGateScreenProps> = ({
           <span data-testid="preload-current-asset" className="sr-only">
             {currentAssetLabel} ({completedCount}/{totalCount})
           </span>
+
+          {/* 开场片下载提示：让观众知道卡住的是视频而不是页面卡死 */}
+          {!isIntroVideoReady && (
+            <span
+              data-testid="preload-intro-hint"
+              className="mt-1 text-[10px] font-bold tracking-[0.12em] text-[#f5d5a7]/70 whitespace-nowrap"
+            >
+              正在加载开场影片 {introVideoPercent}%
+            </span>
+          )}
         </div>
       </div>
     </div>

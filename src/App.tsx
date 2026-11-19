@@ -48,10 +48,10 @@ import type { DanmakuMessage } from '../server';
 /** 弹幕数据来源：supabase（线上多人共享） / local（本地 ws 服务） */
 type DanmakuSource = 'supabase' | 'local';
 
-/** 0 秒倒计时状态锁定的专属战歌：Know My Name */
-const KNOW_MY_NAME_TRACK_INDEX = Math.max(
+/** 0 秒倒计时 / 夺冠海报页锁定的专属战歌：MR. nobody */
+const ZERO_FLAG_TRACK_INDEX = Math.max(
   0,
-  BGM_PLAYLIST.findIndex((t) => t.id === 'know-my-name')
+  BGM_PLAYLIST.findIndex((t) => t.id === 'mr-nobody')
 );
 
 export default function App() {
@@ -66,6 +66,8 @@ export default function App() {
 
   /** 首屏强制竖屏弹窗（YOU KNOW THEIR NAMES · BLG）是否已播完，播完才进入主页 */
   const [isVerticalIntroDone, setIsVerticalIntroDone] = useState<boolean>(false);
+  /** 加载页整段下载完的开场片 blob 地址，交给竖屏页秒开 */
+  const [introVideoSrc, setIntroVideoSrc] = useState<string | undefined>(undefined);
 
   // 导播控制台「夺冠海报」切换控制（默认 'hide' 展示 BLG夺冠黄金之路主导播台，可手动切换 'show'）
   const [zeroStageOverride, setZeroStageOverride] = useState<'auto' | 'show' | 'hide'>('hide');
@@ -304,7 +306,7 @@ export default function App() {
 
     const handleEnded = () => {
       if (isZeroFlagModeRef.current) {
-        loadTrack(KNOW_MY_NAME_TRACK_INDEX, wantsPlayRef.current);
+        loadTrack(ZERO_FLAG_TRACK_INDEX, wantsPlayRef.current);
         return;
       }
       loadTrack(getNextTrackIndex(trackIndexRef.current), wantsPlayRef.current);
@@ -457,7 +459,7 @@ export default function App() {
 
     if (slot === 'data_preview') {
       const nextIndex = isZeroFlagModeRef.current
-        ? KNOW_MY_NAME_TRACK_INDEX
+        ? ZERO_FLAG_TRACK_INDEX
         : getRandomDifferentTrackIndex(trackIndexRef.current);
       if (!isMutedRef.current) {
         wantsPlayRef.current = true;
@@ -468,7 +470,7 @@ export default function App() {
 
     if (prev === 'promo_video' || prev === 'data_preview') {
       const nextIndex = isZeroFlagModeRef.current
-        ? KNOW_MY_NAME_TRACK_INDEX
+        ? ZERO_FLAG_TRACK_INDEX
         : getRandomDifferentTrackIndex(trackIndexRef.current);
       if (!isMutedRef.current) {
         wantsPlayRef.current = true;
@@ -505,7 +507,7 @@ export default function App() {
     ensureAudioAnalyser();
     if (isZeroFlagModeRef.current) {
       wantsPlayRef.current = true;
-      loadTrack(KNOW_MY_NAME_TRACK_INDEX, !isMutedRef.current);
+      loadTrack(ZERO_FLAG_TRACK_INDEX, !isMutedRef.current);
       return;
     }
     const nextIndex = getNextTrackIndex(trackIndexRef.current);
@@ -839,7 +841,7 @@ export default function App() {
       ? false
       : activeCountdown.isZero;
 
-  // 当倒计时变成 0 秒（或开启 0 秒开赛画面预览）时，自动关闭子插播页并将背景音乐锁定为 Know My Name
+  // 当倒计时变成 0 秒（或开启 0 秒开赛画面预览）时，自动关闭子插播页并将背景音乐锁定为 MR. nobody
   useEffect(() => {
     const wasZero = isZeroFlagModeRef.current;
     isZeroFlagModeRef.current = isZeroFlagMode;
@@ -850,15 +852,15 @@ export default function App() {
       ensureAudioAnalyser();
       wantsPlayRef.current = true;
       if (
-        trackIndexRef.current !== KNOW_MY_NAME_TRACK_INDEX ||
+        trackIndexRef.current !== ZERO_FLAG_TRACK_INDEX ||
         audioRef.current?.paused
       ) {
-        loadTrack(KNOW_MY_NAME_TRACK_INDEX, !isMutedRef.current);
+        loadTrack(ZERO_FLAG_TRACK_INDEX, !isMutedRef.current);
       }
     } else if (!isZeroFlagMode && wasZero && prevTrackBeforeZeroRef.current !== null) {
       const restoreIdx = prevTrackBeforeZeroRef.current;
       prevTrackBeforeZeroRef.current = null;
-      if (restoreIdx !== KNOW_MY_NAME_TRACK_INDEX) {
+      if (restoreIdx !== ZERO_FLAG_TRACK_INDEX) {
         loadTrack(restoreIdx, wantsPlayRef.current && !isMutedRef.current);
       }
     }
@@ -871,12 +873,18 @@ export default function App() {
     >
       {/* 游戏式进场前资源预加载门控界面 */}
       {isPreloadComplete && !isVerticalIntroDone && (
-        <VerticalIntroGate onDone={() => setIsVerticalIntroDone(true)} />
+        <VerticalIntroGate
+          src={introVideoSrc}
+          onDone={() => setIsVerticalIntroDone(true)}
+        />
       )}
 
       {!isPreloadComplete && (
         <PreloadGateScreen
-          onReady={() => setIsPreloadComplete(true)}
+          onReady={(introUrl) => {
+            setIntroVideoSrc(introUrl);
+            setIsPreloadComplete(true);
+          }}
           audioEnabled={!isMuted}
           onToggleAudio={handlePreloadAudioToggle}
         />
@@ -895,6 +903,9 @@ export default function App() {
           isPreloadComplete ? 'animate-stage-fade-in opacity-100' : 'opacity-0'
         }`}
       >
+        {/* 竖屏开场片播完才挂载导播台：
+            否则十几个 <video> 会和开场片抢硬件解码器，导致开场片卡住不动 */}
+        {isVerticalIntroDone && (
         <BroadcastStage
           countdown={activeCountdown}
           promoCountdown={promoCountdown}
@@ -917,6 +928,7 @@ export default function App() {
           onExitZeroFlagPreview={() => setZeroStageOverride('hide')}
           isHudMinimized={isHudMinimized}
         />
+        )}
       </div>
 
       {/* =====================================================================
@@ -1007,13 +1019,13 @@ export default function App() {
                 </span>
               </button>
 
-              {/* Next Track (disabled when locked to Know My Name in Champions Poster mode) */}
+              {/* Next Track (disabled when locked to MR. nobody in Champions Poster mode) */}
               <button
                 type="button"
                 onClick={handleNextTrack}
                 disabled={isZeroFlagMode}
-                aria-label={isZeroFlagMode ? '夺冠海报模式已固定播放战歌 Know My Name' : '下一首战歌'}
-                title={isZeroFlagMode ? '夺冠海报画面已固定播放背景音乐 Know My Name' : '切到下一首战歌'}
+                aria-label={isZeroFlagMode ? '夺冠海报模式已固定播放战歌 MR. nobody' : '下一首战歌'}
+                title={isZeroFlagMode ? '夺冠海报画面已固定播放背景音乐 MR. nobody' : '切到下一首战歌'}
                 className={`p-1 rounded-lg bg-[#1c160f] text-[#f5d5a7] border border-[#c8aa78]/25 shrink-0 transition-transform ${
                   isZeroFlagMode
                     ? 'opacity-45 cursor-not-allowed'
@@ -1068,11 +1080,11 @@ export default function App() {
                       isMutedRef.current = false;
                       if (audioRef.current) audioRef.current.muted = false;
                     }
-                    loadTrack(KNOW_MY_NAME_TRACK_INDEX, true);
+                    loadTrack(ZERO_FLAG_TRACK_INDEX, true);
                   }
                 }}
                 aria-pressed={isZeroFlagMode}
-                title="切换全屏 BLG 夺冠海报与庆祝金色彩带动画（固定播放战歌 Know My Name）"
+                title="切换全屏 BLG 夺冠海报与庆祝金色彩带动画（固定播放战歌 MR. nobody）"
                 className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-extrabold border transition-all whitespace-nowrap shrink-0 cursor-pointer ${
                   isZeroFlagMode
                     ? 'bg-gradient-to-r from-[#d4b483] to-[#f5d5a7] text-[#14100a] border-[#f5d5a7] shadow-[0_0_14px_rgba(245,213,167,0.55)]'

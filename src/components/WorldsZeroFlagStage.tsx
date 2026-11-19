@@ -408,7 +408,7 @@ export const WorldsZeroFlagStage: React.FC<WorldsZeroFlagStageProps> = ({
       />
 
       {/* =====================================================================
-          5. TOP HUD: CHAMPIONS STATUS + BGM LOCKED TO KNOW MY NAME + RE-BURST
+          5. TOP HUD: CHAMPIONS STATUS + BGM LOCKED TO MR. NOBODY + RE-BURST
              - Automatically hides after 10s of mouse inactivity
              - Immediately hides when bottom HUD is minimized (isHudMinimized === true)
          ===================================================================== */}
@@ -427,7 +427,7 @@ export const WorldsZeroFlagStage: React.FC<WorldsZeroFlagStageProps> = ({
           <span>WORLDS 2026 CHAMPIONS · BLG 全屏夺冠海报</span>
           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-gradient-to-r from-[#d4b483] to-[#f5d5a7] text-[10px] font-black text-[#14100a]">
             <Music className="w-3 h-3" />
-            <span>固定战歌：Know My Name</span>
+            <span>固定战歌：MR. nobody</span>
           </span>
         </div>
 
